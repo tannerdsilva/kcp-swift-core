@@ -102,7 +102,7 @@ internal struct ikcp_segment {
 }
 
 /// KCP control block. Main structrue that represents a KCP session.
-public struct ikcp_cb:~Copyable {
+public struct ikcp_cb {
 	internal var conv:UInt32		// Conversation ID
 	internal var mtu:UInt32			// Maximum Transmission Unit: Largest UDP packet accepted
 	internal var mss:UInt32			// Maximum Segment Size: Largest amount of data per segment
