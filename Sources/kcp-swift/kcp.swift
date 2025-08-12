@@ -169,7 +169,7 @@ public struct ikcp_cb {
 	
 	var output: (([UInt8]) -> Void)? = nil
 
-	init(conv:UInt32, output:(([UInt8]) -> Void)?, user:UnsafeMutableRawPointer?) {
+	public init(conv:UInt32, output:(([UInt8]) -> Void)?, user:UnsafeMutableRawPointer?) {
 		self.conv = conv
 		self.mtu = IKCP_MTU_DEF
 		self.mss = mtu - IKCP_OVERHEAD
