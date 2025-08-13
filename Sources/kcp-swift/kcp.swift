@@ -166,10 +166,11 @@ public struct ikcp_cb {
 	internal var nocwnd:Int64
 	
 	public var stream:Bool
+	public var synchronous:Bool
 	
 	var output: (([UInt8]) -> Void)? = nil
 
-	public init(conv:UInt32, output:(([UInt8]) -> Void)?, user:UnsafeMutableRawPointer?) {
+	public init(conv:UInt32, output:(([UInt8]) -> Void)?, user:UnsafeMutableRawPointer?, synchronous:Bool = false) {
 		self.conv = conv
 		self.mtu = IKCP_MTU_DEF
 		self.mss = mtu - IKCP_OVERHEAD
@@ -231,6 +232,7 @@ public struct ikcp_cb {
 		self.nocwnd = 0
 		
 		self.stream = false
+		self.synchronous = synchronous
 		self.output = output
 	}
 	enum Error:Swift.Error {
@@ -262,7 +264,7 @@ public struct ikcp_cb {
 		let peekedSize = try peekSize()
 		
 		// If queue is longer than the receive window, enter recovery mode
-		if self.rcv_queue.count >= self.rcv_wnd {
+		if (self.rcv_queue.count >= self.rcv_wnd && synchronous == false) {
 			recover = true
 		}
 		
@@ -295,7 +297,7 @@ public struct ikcp_cb {
 		// Move available data from the rcv_buf -> rcv_queue
 		while(rcv_buf.isEmpty == false) {
 			seg = rcv_buf[0]
-			if(seg.sn == rcv_nxt && nrcv_que < rcv_wnd) {
+			if(seg.sn == rcv_nxt && (nrcv_que < rcv_wnd || synchronous)) {
 				rcv_buf.remove(at: 0)
 				nrcv_buf -= 1
 				rcv_queue.append(seg)
@@ -389,7 +391,7 @@ public struct ikcp_cb {
 		if(len <= mss) { count = 1 }
 		else { count = (len + Int(mss) - 1) / Int(mss) }
 		
-		if(count >= IKCP_WND_RCV) {
+		if(count >= IKCP_WND_RCV && synchronous == false) {
 			if(stream != false && sent > 0) {
 				return sent
 			}
@@ -573,7 +575,7 @@ public struct ikcp_cb {
 		// Move available data from the rcv_buf -> rcv_queue
 		while(rcv_buf.isEmpty == false) {
 			let seg = rcv_buf[0]
-			if(seg.sn == rcv_nxt && nrcv_que < rcv_wnd) {
+			if(seg.sn == rcv_nxt && (nrcv_que < rcv_wnd || synchronous)) {
 				rcv_buf.remove(at: 0)
 				nrcv_buf -= 1
 				rcv_queue.append(seg)
@@ -670,7 +672,9 @@ public struct ikcp_cb {
 					}
 				// Remote wants our window size, so we will send it
 				case IKCP_CMD_WASK:
-					probe |= IKCP_ASK_TELL
+					if(synchronous == false) {
+						probe |= IKCP_ASK_TELL
+					}
 				// Remote sent its window size, do nothing else
 				case IKCP_CMD_WINS:
 					break
@@ -744,7 +748,7 @@ public struct ikcp_cb {
 		var buffer = [UInt8](repeating: 0, count: Int(mtu))
 		guard output != nil else { return }
 		
-		if (updated == 0) { return }
+		if (updated == 0 && synchronous == false) { return }
 		
 		var seg = ikcp_segment()
 		seg.conv = conv
@@ -768,44 +772,46 @@ public struct ikcp_cb {
 		
 		ackcount = 0
 		
-		// Probe the window size if remote window size is 0
-		if(rmt_wnd == 0) {
-			if(probe_wait == 0) {
-				probe_wait = IKCP_PROBE_INIT
-				ts_probe = current + probe_wait
-			} else {
-				if(timeDiff(later: current, earlier: ts_probe) >= 0) {
-					if(probe_wait < IKCP_PROBE_INIT) { probe_wait = IKCP_PROBE_INIT }
-					probe_wait += probe_wait / 2
-					if(probe_wait > IKCP_PROBE_LIMIT) { probe_wait = IKCP_PROBE_LIMIT }
+		if(synchronous == false) {
+			// Probe the window size if remote window size is 0
+			if(rmt_wnd == 0) {
+				if(probe_wait == 0) {
+					probe_wait = IKCP_PROBE_INIT
 					ts_probe = current + probe_wait
-					probe |= IKCP_ASK_SEND
+				} else {
+					if(timeDiff(later: current, earlier: ts_probe) >= 0) {
+						if(probe_wait < IKCP_PROBE_INIT) { probe_wait = IKCP_PROBE_INIT }
+						probe_wait += probe_wait / 2
+						if(probe_wait > IKCP_PROBE_LIMIT) { probe_wait = IKCP_PROBE_LIMIT }
+						ts_probe = current + probe_wait
+						probe |= IKCP_ASK_SEND
+					}
 				}
+			} else {
+				ts_probe = 0
+				probe_wait = 0
 			}
-		} else {
-			ts_probe = 0
-			probe_wait = 0
+			
+			// Flush window probing commands
+			if(probe & IKCP_ASK_SEND) != 0 {
+				seg.cmd = IKCP_CMD_WASK
+				output!(encodeSegment(seg: seg))
+			}
+			
+			if(probe & IKCP_ASK_TELL) != 0 {
+				seg.cmd = IKCP_CMD_WINS
+				output!(encodeSegment(seg: seg))
+			}
+			
+			probe = 0
+			
+			// Calculate window size
+			cwnd = min(snd_wnd, rmt_wnd)
+			if(nocwnd == 0) { cwnd = min(self.cwnd, cwnd) }
 		}
-		
-		// Flush window probing commands
-		if(probe & IKCP_ASK_SEND) != 0 {
-			seg.cmd = IKCP_CMD_WASK
-			output!(encodeSegment(seg: seg))
-		}
-		
-		if(probe & IKCP_ASK_TELL) != 0 {
-			seg.cmd = IKCP_CMD_WINS
-			output!(encodeSegment(seg: seg))
-		}
-		
-		probe = 0
-		
-		// Calculate window size
-		cwnd = min(snd_wnd, rmt_wnd)
-		if(nocwnd == 0) { cwnd = min(self.cwnd, cwnd) }
 		
 		// Move data from send queue to send buf
-		while(timeDiff(later: snd_nxt, earlier: snd_una + cwnd) < 0) {
+		while(timeDiff(later: snd_nxt, earlier: snd_una + cwnd) < 0 || synchronous) {
 			if snd_queue.isEmpty { break }
 			var newSeg = snd_queue.removeFirst()
 			
@@ -921,5 +927,10 @@ public struct ikcp_cb {
 			}
 			flush()
 		}
+	}
+	
+	/// (Synchronous function) Returns true if all send data has been acknowledged. 
+	public mutating func ackUpToDate() -> Bool {
+		return snd_una == snd_nxt
 	}
 }

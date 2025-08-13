@@ -24,7 +24,7 @@ import Foundation
 	var tempPayload1 = payload1
 	let _ = sender.send(buffer: &tempPayload1, _len: 1000)
 	
-	var now = UInt32(1_000_000)          // “current” time (ms)
+	var now = UInt32(0)          // “current” time (ms)
 
 	var received: [[UInt8]] = []
 	repeat {
@@ -82,7 +82,7 @@ import Foundation
 	tempPayload = payload4
 	let _ = sender.send(buffer: &tempPayload, _len: 50)
 	
-	var now = UInt32(1_000_000)          // “current” time (ms)
+	var now = UInt32(0)          // “current” time (ms)
 
 	var received: [[UInt8]] = []
 	repeat {
@@ -143,7 +143,7 @@ import Foundation
 	tempPayload = payload4
 	let _ = sender.send(buffer: &tempPayload, _len: 100000)
 	
-	var now = UInt32(1_000_000)          // “current” time (ms)
+	var now = UInt32(0)          // “current” time (ms)
 
 	var received: [[UInt8]] = []
 	repeat {
@@ -174,3 +174,57 @@ import Foundation
 	#expect(received[3] == payload4)
 }
 
+@Test func testSendAndReceiveSynchronously() throws {
+	let conv: UInt32 = 0x1234
+	
+	var receiver: ikcp_cb! = nil
+	var sender: ikcp_cb! = nil
+	
+	sender = ikcp_cb(conv: conv, output: { buffer in
+		let _ = receiver.input(data: buffer)
+	}, user: nil, synchronous: true)
+	receiver = ikcp_cb(conv: conv, output: { buffer in
+		let _ = sender.input(data: buffer)
+	}, user: nil, synchronous: true)
+	
+	let payloadSize: Int = 1_000_000
+	
+	var payload = [UInt8](repeating: 0, count: payloadSize)
+	for i in 0..<payloadSize {
+		payload[i] = UInt8(i%256)
+	}
+	var tempPayload = payload
+	
+	while(tempPayload != []) {
+		if(tempPayload.count >= 300_000) {
+			_ = sender.send(buffer: &tempPayload, _len: 300_000)
+		} else {
+			_ = sender.send(buffer: &tempPayload, _len: tempPayload.count)
+		}
+	}
+	
+	var now = UInt32(0)
+	
+	// Send all segments in the queue
+	sender.update(current: now)
+	
+	// Receive all segments and put them back together
+	var received: [UInt8] = []
+	while let data = try! receiver.receive() {
+		received.append(contentsOf: data)
+	}
+	
+	now+=100_000_000
+	
+	while(!sender.ackUpToDate()) {
+		sender.update(current: now)
+		
+		// Sending ACKs
+		receiver.update(current: now)
+	}
+	
+	let data = try! receiver.receive()
+	#expect(data == nil)
+	
+	#expect(received == payload)
+}
