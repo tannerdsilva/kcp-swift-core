@@ -10,15 +10,9 @@ import Foundation
 	var receiver: ikcp_cb! = nil
 	var sender: ikcp_cb! = nil
 
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into sender
-		let _ = sender.input(data: buffer)
-	}, user: nil)
+	receiver = ikcp_cb(conv: conv, user: nil)
 
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into receiver
-		let _ = receiver.input(data: buffer)
-	}, user: nil)
+	sender = ikcp_cb(conv: conv, user: nil)
 
 	let payload1 = [UInt8](repeating: 1, count: 1000)
 	var tempPayload1 = payload1
@@ -28,8 +22,12 @@ import Foundation
 
 	var received: [[UInt8]] = []
 	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
+		sender.update(current: now, output: { buffer in
+			let _ = receiver.input(data: buffer)
+	 })
+		receiver.update(current: now, output: { buffer in
+			let _ = sender.input(data: buffer)
+	 })
 		
 		do {
 			guard let tempReceived = try receiver.receive() else {
@@ -58,15 +56,9 @@ import Foundation
 	var receiver: ikcp_cb! = nil
 	var sender: ikcp_cb! = nil
 
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into sender
-		let _ = sender.input(data: buffer)
-	}, user: nil)
+	receiver = ikcp_cb(conv: conv, user: nil)
 
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into receiver
-		let _ = receiver.input(data: buffer)
-	}, user: nil)
+	sender = ikcp_cb(conv: conv, user: nil)
 
 	let payload1 = [UInt8](repeating: 1, count: 20)
 	let payload2 = [UInt8](repeating: 2, count: 30)
@@ -86,8 +78,12 @@ import Foundation
 
 	var received: [[UInt8]] = []
 	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
+		sender.update(current: now, output: { buffer in
+			let _ = receiver.input(data: buffer)
+	 })
+		receiver.update(current: now, output: { buffer in
+			let _ = sender.input(data: buffer)
+	 })
 		
 		do {
 			guard let tempReceived = try receiver.receive() else {
@@ -119,15 +115,9 @@ import Foundation
 	var receiver: ikcp_cb! = nil
 	var sender: ikcp_cb! = nil
 
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into sender
-		let _ = sender.input(data: buffer)
-	}, user: nil)
+	receiver = ikcp_cb(conv: conv, user: nil)
 
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into receiver
-		let _ = receiver.input(data: buffer)
-	}, user: nil)
+	sender = ikcp_cb(conv: conv, user: nil)
 
 	let payload1 = [UInt8](repeating: 1, count: 100000)
 	let payload2 = [UInt8](repeating: 2, count: 100000)
@@ -147,8 +137,12 @@ import Foundation
 
 	var received: [[UInt8]] = []
 	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
+		sender.update(current: now, output: { buffer in
+			let _ = receiver.input(data: buffer)
+	 })
+		receiver.update(current: now, output: { buffer in
+			let _ = sender.input(data: buffer)
+	 })
 		
 		do {
 			guard let tempReceived = try receiver.receive() else {
@@ -180,12 +174,8 @@ import Foundation
 	var receiver: ikcp_cb! = nil
 	var sender: ikcp_cb! = nil
 	
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		let _ = receiver.input(data: buffer)
-	}, user: nil, synchronous: true)
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		let _ = sender.input(data: buffer)
-	}, user: nil, synchronous: true)
+	sender = ikcp_cb(conv: conv, user: nil, synchronous: true)
+	receiver = ikcp_cb(conv: conv, user: nil, synchronous: true)
 	
 	let payloadSize: Int = 1_000_000
 	
@@ -206,7 +196,9 @@ import Foundation
 	var now = UInt32(0)
 	
 	// Send all segments in the queue
-	sender.update(current: now)
+	sender.update(current: now, output: { buffer in
+		let _ = receiver.input(data: buffer)
+	})
 	
 	// Receive all segments and put them back together
 	var received: [UInt8] = []
@@ -217,10 +209,14 @@ import Foundation
 	now+=100_000_000
 	
 	while(!sender.ackUpToDate()) {
-		sender.update(current: now)
+		sender.update(current: now, output: { buffer in
+			let _ = receiver.input(data: buffer)
+	 })
 		
 		// Sending ACKs
-		receiver.update(current: now)
+		receiver.update(current: now, output: { buffer in
+			let _ = sender.input(data: buffer)
+	 })
 	}
 	
 	let data = try! receiver.receive()

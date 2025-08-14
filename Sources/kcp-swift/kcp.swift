@@ -157,7 +157,6 @@ public struct ikcp_cb {
 	internal var ackblock:UInt32
 
 	internal var user:UnsafeMutableRawPointer?			// stores context (like socket or channel)
-	internal var buffer:UnsafeMutablePointer<UInt8>		// Internal buffer for packet building (temp buffer)
 
 	internal var fastresend:Int64
 	
@@ -167,10 +166,8 @@ public struct ikcp_cb {
 	
 	public var stream:Bool
 	public var synchronous:Bool
-	
-	var output: (([UInt8]) -> Void)? = nil
 
-	public init(conv:UInt32, output:(([UInt8]) -> Void)?, user:UnsafeMutableRawPointer?, synchronous:Bool = false) {
+	public init(conv:UInt32, user:UnsafeMutableRawPointer?, synchronous:Bool = false) {
 		self.conv = conv
 		self.mtu = IKCP_MTU_DEF
 		self.mss = mtu - IKCP_OVERHEAD
@@ -225,7 +222,6 @@ public struct ikcp_cb {
 		self.ackblock = 0
 
 		self.user = user
-		self.buffer = UnsafeMutablePointer<UInt8>.allocate(capacity:Int(mtu) + Int(IKCP_OVERHEAD) * 3)
 
 		self.fastresend = 0
 		self.fastlimit = Int64(IKCP_FASTACK_LIMIT)
@@ -233,7 +229,6 @@ public struct ikcp_cb {
 		
 		self.stream = false
 		self.synchronous = synchronous
-		self.output = output
 	}
 	enum Error:Swift.Error {
 		/// thrown when the rcv_queue is empty
@@ -742,7 +737,7 @@ public struct ikcp_cb {
 	// ikcp_flush
 	//---------------------------------------------------------------------
 	/// Flushes segments to an array of segments ready to send through the network
-	internal mutating func flush() {
+	internal mutating func flush(output:(([UInt8]) -> Void)?) {
 		let current = current; var lost = false
 		var change = 0
 		var buffer = [UInt8](repeating: 0, count: Int(mtu))
@@ -905,7 +900,7 @@ public struct ikcp_cb {
 	// ikcp_check when to call it again (without ikcp_input/_send calling).
 	// 'current' - current timestamp in millisec.
 	//---------------------------------------------------------------------
-	public mutating func update(current: UInt32) {
+	public mutating func update(current: UInt32, output:(([UInt8]) -> Void)?) {
 		self.current = current
 		
 		if(updated == 0) {
@@ -925,12 +920,12 @@ public struct ikcp_cb {
 			if(timeDiff(later: current, earlier: ts_flush) >= 0) {
 				ts_flush = current + interval
 			}
-			flush()
+			flush(output: output)
 		}
 	}
 	
 	/// (Synchronous function) Returns true if all send data has been acknowledged. 
-	public mutating func ackUpToDate() -> Bool {
+	public func ackUpToDate() -> Bool {
 		return snd_una == snd_nxt
 	}
 }
