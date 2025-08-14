@@ -903,6 +903,11 @@ public struct ikcp_cb {
 	public mutating func update(current: UInt32, output:(([UInt8]) -> Void)?) {
 		self.current = current
 		
+		if(synchronous) {
+			flush(output: output)
+			return
+		}
+		
 		if(updated == 0) {
 			updated = 1
 			ts_flush = current

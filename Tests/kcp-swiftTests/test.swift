@@ -177,7 +177,7 @@ import Foundation
 	sender = ikcp_cb(conv: conv, user: nil, synchronous: true)
 	receiver = ikcp_cb(conv: conv, user: nil, synchronous: true)
 	
-	let payloadSize: Int = 1_000_000
+	let payloadSize: Int = 30_000_000
 	
 	var payload = [UInt8](repeating: 0, count: payloadSize)
 	for i in 0..<payloadSize {
@@ -186,8 +186,8 @@ import Foundation
 	var tempPayload = payload
 	
 	while(tempPayload != []) {
-		if(tempPayload.count >= 300_000) {
-			_ = sender.send(buffer: &tempPayload, _len: 300_000)
+		if(tempPayload.count >= 300_004) {
+			_ = sender.send(buffer: &tempPayload, _len: 300_004)
 		} else {
 			_ = sender.send(buffer: &tempPayload, _len: tempPayload.count)
 		}
@@ -221,6 +221,6 @@ import Foundation
 	
 	let data = try! receiver.receive()
 	#expect(data == nil)
-	
+	#expect(sender.ackUpToDate())
 	#expect(received == payload)
 }
