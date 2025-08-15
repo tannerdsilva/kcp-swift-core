@@ -830,7 +830,7 @@ public struct ikcp_cb {
 		let resent = (fastresend > 0) ? fastresend : 0xffffffff
 		let rtomin = (nodelay == 0) ? (rx_rto >> 3) : 0
 		
-		for i in 0..<Int(nsnd_buf) {
+		for i in 0..<Int(snd_buf.count) { // nsnd_buf
 			var segment = snd_buf[i]
 			var needSend = false
 			// Basic transmit
