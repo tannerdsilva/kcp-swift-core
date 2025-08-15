@@ -224,3 +224,30 @@ import Foundation
 	#expect(sender.ackUpToDate())
 	#expect(received == payload)
 }
+
+
+@Test func testRcvBufOrdering() {
+	var kcp = ikcp_cb(conv: 1, user: nil)
+
+	// Helper to build a raw segment
+	func seg(sn: UInt32, data: UInt8) -> ikcp_segment {
+		var s = ikcp_segment(size: 1)
+		s.sn = sn
+		s.len = 1
+		s.data[0] = data
+		s.frg = 0
+		return s
+	}
+
+	// Insert out‑of‑order packets: 5, 1, 3, 2, 4
+	let raw = [5, 1, 3, 2, 4].map { seg(sn: UInt32($0), data: UInt8($0)) }
+
+	// Simulate receiving each as a PUSH
+	for p in raw {
+		kcp.parseData(newSeg: p)
+	}
+
+	// After all inserts the buffer must be sorted ascending
+	let orderedSn = kcp.rcv_buf.map { $0.sn }
+	#expect(orderedSn == [1,2,3,4,5])
+}

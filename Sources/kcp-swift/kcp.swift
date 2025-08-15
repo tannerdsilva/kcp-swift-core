@@ -546,15 +546,15 @@ public struct ikcp_cb {
 		var insertIdx:Int = rcv_buf.count
 		
 		// Find the index it should be inserted into
-		for (revIdx, seg) in rcv_buf.reversed().enumerated() {
+		for (idx, seg) in rcv_buf.enumerated() {
 			// The segment already exists
 			if(seg.sn == sn) {
 				isDuplicate = true
 				break
 			}
 			// When a segment with smaller sn is found, the new segment goes after it
-			if(timeDiff(later: sn, earlier: seg.sn) > 0) {
-				insertIdx = rcv_buf.count - revIdx
+			if(timeDiff(later: seg.sn, earlier: sn) > 0) {
+				insertIdx = idx
 				break
 			}
 		}
