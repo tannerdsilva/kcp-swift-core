@@ -869,6 +869,7 @@ public struct ikcp_cb {
 				segment.ts = current
 				segment.wnd = seg.wnd
 				segment.una = rcv_nxt
+				snd_buf[i] = segment
 				
 				output!(encodeSegment(seg: segment))
 			}
