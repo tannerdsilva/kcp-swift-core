@@ -1,176 +1,133 @@
+//
+//  KCPSendTests.swift
+//  KCPTests
+//
+//  Run with: `swift test` (Swift 5.9+)
+//
 
 import Testing
-import Foundation
-
 @testable import kcp_swift
 
-@Test func testSendAndReceiveSingleSegment() throws {
-	let conv: UInt32 = 0x1234
-	
-	var receiver: ikcp_cb! = nil
-	var sender: ikcp_cb! = nil
-
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into sender
-		let _ = sender.input(data: buffer)
-	})
-
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into receiver
-		let _ = receiver.input(data: buffer)
-	})
-
-	let payload1 = [UInt8](repeating: 1, count: 1000)
-	var tempPayload1 = payload1
-	let _ = sender.send(buffer: &tempPayload1, _len: 1000)
-	
-	var now = UInt32(1_000_000)          // “current” time (ms)
-
-	var received: [[UInt8]] = []
-	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
-		
-		do {
-			guard let tempReceived = try receiver.receive() else {
-				continue
-			}
-			received.append(tempReceived)
-		} catch {
-			
-		}
-
-		now += 10_000        // advance 10 ms per iteration – tweak as needed
-		
-		Thread.sleep(forTimeInterval: 0.01)
-
-		// Break if nothing left to send and nothing left to receive.
-		if received.count == 1 { break }
-	} while true
-	
-	#expect(received.count == 1)
-	#expect(received[0] == payload1)
+@Suite(.serialized)
+struct kcp_core_tests {
+	var kcp:ikcp_cb
+    var capturedPackets: [[UInt8]] = []   // what the output handler sees
 }
 
-@Test func testSendAndReceiveMultipleSegments() throws {
-	let conv: UInt32 = 0x1234
-	
-	var receiver: ikcp_cb! = nil
-	var sender: ikcp_cb! = nil
+@Suite(.serialized)
+struct kcp_send_tests {
 
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into sender
-		let _ = sender.input(data: buffer)
-	})
+    // -----------------------------------------------------------------
+    // MARK: – Helper – a fresh, minimally‑configured KCP instance
+    // -----------------------------------------------------------------
+    var kcp: ikcp_cb
 
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into receiver
-		let _ = receiver.input(data: buffer)
-	})
+    init() {
+        // The constructor you already have – the output handler is not needed
+        // for the `ikcp_send` tests, so we pass `nil`.
+        kcp = ikcp_cb(conv: 0x11223344, output: nil)
 
-	let payload1 = [UInt8](repeating: 1, count: 20)
-	let payload2 = [UInt8](repeating: 2, count: 30)
-	let payload3 = [UInt8](repeating: 3, count: 40)
-	let payload4 = [UInt8](repeating: 4, count: 50)
-	
-	var tempPayload = payload1
-	let _ = sender.send(buffer: &tempPayload, _len: 20)
-	tempPayload = payload2
-	let _ = sender.send(buffer: &tempPayload, _len: 30)
-	tempPayload = payload3
-	let _ = sender.send(buffer: &tempPayload, _len: 40)
-	tempPayload = payload4
-	let _ = sender.send(buffer: &tempPayload, _len: 50)
-	
-	var now = UInt32(1_000_000)          // “current” time (ms)
+        // Reasonable defaults for the tests
+        kcp.mtu = 1500
+        kcp.mss = 1000          // “Maximum Segment Size”
+        kcp.stream = false      // most tests use non‑stream mode
+    }
 
-	var received: [[UInt8]] = []
-	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
-		
-		do {
-			guard let tempReceived = try receiver.receive() else {
-				continue
-			}
-			received.append(tempReceived)
-		} catch {
-			
+    // -----------------------------------------------------------------
+    // MARK: – 1️⃣  Simple, non‑fragmented send
+    // -----------------------------------------------------------------
+    @Test
+    mutating func sendSinglePacket() throws {
+        // 500 bytes < mss → only one segment should be created
+        var payload = [UInt8](repeating: 0xAB, count: 500)
+
+        let sent = try kcp.send(&payload, count:payload.count)
+
+        #expect(sent == payload.count)                 // all bytes were queued
+        #expect(kcp.snd_queue.count == 1)              // exactly one segment
+
+        // Grab the segment that was inserted into the list
+        let seg = kcp.snd_queue.front!.value!
+
+        #expect(seg.len == UInt32(payload.count))      // length recorded correctly
+        #expect(seg.frg == 0)                          // no fragmentation
+
+        // Verify the data inside the segment is identical to the source
+        for i in 0..<payload.count {
+            #expect(seg.data[i] == payload[i])
+        }
+    }
+    
+	@Test
+	mutating func sendFragmentedPacket() throws {
+		// 2500 bytes → 3 fragments when mss = 1000
+		let total = 2500
+		var payload = (0..<total).map { UInt8($0 & 0xFF) }
+
+		let sent = try kcp.send(&payload, count:total)
+
+		#expect(sent == total)                         // everything queued
+		#expect(kcp.snd_queue.count == 3)              // 3 fragments
+
+		// Walk the list forward and check size / frg fields
+		var expectedSize = total
+		var expectedFrg: UInt8 = 2                      // count‑1 for the first fragment
+
+		for (cur, seg) in kcp.snd_queue.makeIterator() {
+			let thisSize = min(expectedSize, Int(kcp.mss))
+			#expect(seg.len == UInt32(thisSize))
+			#expect(seg.frg == expectedFrg)
+
+			expectedSize -= thisSize
+			if expectedFrg > 0 { expectedFrg -= 1 }
 		}
-
-		now += 10_000        // advance 10 ms per iteration – tweak as needed
-		
-		Thread.sleep(forTimeInterval: 0.01)
-
-		// Break if nothing left to send and nothing left to receive.
-		if received.count == 4 { break }
-	} while true
+		#expect(expectedSize == 0)
+	}
 	
-	#expect(received.count == 4)
-	#expect(received[0] == payload1)
-	#expect(received[1] == payload2)
-	#expect(received[2] == payload3)
-	#expect(received[3] == payload4)
-}
+	@Test
+	mutating func streamModeExtension() throws {
+		kcp.stream = true                     // enable stream mode
 
-@Test func testSendAndReceiveMultipleLargeSegments() throws {
-	let conv: UInt32 = 0x1234
-	
-	var receiver: ikcp_cb! = nil
-	var sender: ikcp_cb! = nil
+		// 1️⃣ First chunk – 600 bytes (still < mss)
+		var first = [UInt8](repeating: 0x01, count: 600)
+		let sent1 = try kcp.send(&first, count:first.count)
+		#expect(kcp.snd_queue.count == 1)     // one segment only
 
-	receiver = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into sender
-		let _ = sender.input(data: buffer)
-	})
+		// 2️⃣ Second chunk – 300 bytes, should extend the existing segment
+		var second = [UInt8](repeating: 0x02, count: 300)
+		let sent2 = try kcp.send(&second, count: second.count)
 
-	sender = ikcp_cb(conv: conv, output: { buffer in
-		// Pass received buffer into receiver
-		let _ = receiver.input(data: buffer)
-	})
+		#expect(sent2 == 300)                 // all 300 bytes were accepted
+		#expect(kcp.snd_queue.count == 1)     // still only one segment
 
-	let payload1 = [UInt8](repeating: 1, count: 100000)
-	let payload2 = [UInt8](repeating: 2, count: 100000)
-	let payload3 = [UInt8](repeating: 3, count: 100000)
-	let payload4 = [UInt8](repeating: 4, count: 100000)
-	
-	var tempPayload = payload1
-	let _ = sender.send(buffer: &tempPayload, _len: 100000)
-	tempPayload = payload2
-	let _ = sender.send(buffer: &tempPayload, _len: 100000)
-	tempPayload = payload3
-	let _ = sender.send(buffer: &tempPayload, _len: 100000)
-	tempPayload = payload4
-	let _ = sender.send(buffer: &tempPayload, _len: 100000)
-	
-	var now = UInt32(1_000_000)          // “current” time (ms)
+		// Verify the merged segment
+		let seg = kcp.snd_queue.front!.value!
+		#expect(seg.len == 900)               // 600 + 300
 
-	var received: [[UInt8]] = []
-	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
-		
-		do {
-			guard let tempReceived = try receiver.receive() else {
-				continue
-			}
-			received.append(tempReceived)
-		} catch {
-			
+		// First 600 bytes = 0x01, next 300 bytes = 0x02
+		for i in 0..<600 {
+			#expect(seg.data[i] == 0x01)
 		}
-
-		now += 10_000        // advance 10 ms per iteration – tweak as needed
-		
-		Thread.sleep(forTimeInterval: 0.01)
-
-		// Break if nothing left to send and nothing left to receive.
-		if received.count == 4 { break }
-	} while true
+		for i in 600..<900 {
+			#expect(seg.data[i] == 0x02)
+		}
+	}
 	
-	#expect(received.count == 4)
-	#expect(received[0] == payload1)
-	#expect(received[1] == payload2)
-	#expect(received[2] == payload3)
-	#expect(received[3] == payload4)
-}
+    // -----------------------------------------------------------------
+    // MARK: – 5️⃣  Window‑overflow guard (returns –2)
+    // -----------------------------------------------------------------
+    @Test
+    mutating func windowOverflowReturnsMinusTwo() throws {
+        // Force the fragment count to be >= IKCP_WND_RCV (256)
+        // Setting mss = 1 makes every byte a fragment.
+        kcp.mss = 1
 
+        var payload = [UInt8](repeating: 0xFF, count:Int(IKCP_WND_RCV))   // 256 fragments
+
+		do {
+			_ = try kcp.send(&payload, count: payload.count)
+		} catch ikcp_cb.SendError.invalidDataCountForReceiveWindow {
+			#expect(kcp.snd_queue.isEmpty)        // nothing was queued
+		}
+    }
+}

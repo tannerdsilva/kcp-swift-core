@@ -20,6 +20,7 @@ public final class LinkedList<Element> {
 	public init() {
 		head = Node(value: nil)               // sentinel
 	}
+	public typealias Handler = (Node, Element)
 	deinit { clear() }
 	public var isEmpty: Bool { head.next === head }
 	public var front: Node? { isEmpty ? nil : head.next }
@@ -32,14 +33,12 @@ public final class LinkedList<Element> {
 		p.next = n
 		n.prev = p
 
-		// Break the removed node’s links – helps debugging and avoids
-		// a retain‑cycle between the removed node and the list.
-		node.next = node
-		node.prev = node
+		node.next = nil
+		node.prev = nil
 		count -= 1
 	}
 	@inline(__always)
-	public static func makeNode(_ element: Element) -> Node {
+	private static func makeNode(_ element: Element) -> Node {
 		return Node(value: element)
 	}
 	@inline(__always)
@@ -57,37 +56,18 @@ public final class LinkedList<Element> {
 		return v
 	}
 	public func clear() {
-		// Walk the list and break every node’s links.
-		// We walk forward because we will be destroying the backward links as we go.
+		// break the links on every node
 		var cur = head.next!
 		while cur !== head {
 			let nxt = cur.next!
-			cur.next = cur
-			cur.prev = cur
+			cur.next = nil
+			cur.prev = nil
 			cur = nxt
 		}
-		// Finally make the sentinel point to itself again.
-		head.next = head
-		head.prev = head
+		// make sentinel point to itself again
+		head.next = nil
+		head.prev = nil
 		count = 0
-	}
-	@discardableResult
-	public func walkBackwards(_ body: (Node) -> Bool) -> Bool {
-		var cur = head.prev!          // start at the real tail
-		while cur !== head {
-			if !body(cur) { return false }
-			cur = cur.prev!
-		}
-		return true
-	}
-	@discardableResult
-	public func walkForwards(_ body: (Node) -> Bool) -> Bool {
-		var cur = head.next!
-		while cur !== head {
-			if !body(cur) { return false }
-			cur = cur.next!
-		}
-		return true
 	}
 	private func insert(_ node: Node, after anchor: Node) {
 		let nxt = anchor.next!
@@ -136,9 +116,7 @@ extension LinkedList {
 			// Stop when we hit the sentinel again.
 			guard let node = nextNode, node !== sentinel else { return nil }
 
-			// Advance *before* returning so that removal of `node`
-			// (which sets node.next = node) does not corrupt our
-			// iteration.
+			// Advance *before* returning so that removal of `node` does not corrupt our iteration.
 			nextNode = node.next
 
 			return (node, node.value!)
@@ -157,7 +135,7 @@ extension LinkedList {
 		/// The node that will be returned on the next call to `next()`.
 		private var nextNode: LinkedList<Element>.Node?
 		/// Sentinel node that marks the end of the list.
-		private let sentinel: LinkedList<Element>.Node
+		private let sentinel:LinkedList<Element>.Node
 
 		/// Create a new iterator.
 		///

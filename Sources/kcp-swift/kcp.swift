@@ -63,7 +63,7 @@ let IKCP_CMD_WINS:UInt8 = 84
 let IKCP_ASK_SEND:UInt32 = 1
 let IKCP_ASK_TELL:UInt32 = 2
 let IKCP_WND_SND:UInt32 = 32
-let IKCP_WND_RCV:UInt32 = 1024
+let IKCP_WND_RCV:UInt32 = 256
 let IKCP_MTU_DEF:UInt32 = 1400
 let IKCP_ACK_FAST:UInt32 = 3
 let IKCP_INTERVAL:UInt32 = 100
@@ -95,6 +95,7 @@ internal final class ikcp_segment {
 		} else {
 			data = UnsafeMutableBufferPointer<UInt8>.allocate(capacity:size)
 		}
+		len = UInt32(size)
 	}
 	deinit {
 		if len > 0 {
@@ -153,7 +154,8 @@ public struct ikcp_cb {
 	internal var rcv_queue:LinkedList<ikcp_segment>		// Fully reassembled segments ready to return to application
 	internal var snd_buf:LinkedList<ikcp_segment>		// Segments sent and waiting to be ACKed
 	internal var rcv_buf:LinkedList<ikcp_segment>		// Segments received out of oder and waiting to be reassembled
-
+	
+	/// acklist is nil when ackcount == 0. variable is safe to access any time ackcount > 0
 	internal var acklist:UnsafeMutableBufferPointer<UInt32>!
 	internal var ackcount:UInt32
 	internal var ackblock:UInt32
@@ -166,6 +168,7 @@ public struct ikcp_cb {
 	
 	internal var stream:Bool
 	
+	/// buffer is nil when mtu == 0. variable is safe to access any time ackcount > 0
 	internal var buffer:UnsafeMutablePointer<UInt8>! = nil
 	
 	public typealias OutputHandler = ((UnsafeMutableBufferPointer<UInt8>) -> Void)
@@ -233,35 +236,44 @@ public struct ikcp_cb {
 		self.output = output
 	}
 	
-	
-	public enum Error:Swift.Error {
-		/// thrown when the rcv_queue is empty
-		case rcvQueueEmpty
-		/// thrown when the rcv_queue has less segments than the frg value of the first segment
-		case rcvQueueLessThanFrg
-		/// thrown when the peeked size is greater than the input count
-		case peekedSizeGreaterThanInputCount
+	@available(*, noasync)
+	public mutating func receive() throws -> [UInt8] {
+		let expectedLength = receiveAvailableLength()
+		guard expectedLength > 0 else {
+			throw ReceiveError.receiveQueueEmpty
+		}
+		return try [UInt8](unsafeUninitializedCapacity:expectedLength, initializingWith: { buffInit, buffInitCount in
+			buffInitCount = try receive(buffInit.baseAddress!, len:buffInit.count)
+		})
 	}
 	
-	//---------------------------------------------------------------------
-	// user/upper level recv: returns size, returns below zero for EAGAIN
-	//---------------------------------------------------------------------
-	// _len is the size of the expected returned message
-	// _len is negative for peek mode
-	/// Returns the reformed message from the KCP fragments
-	public mutating func receive(_ ptr:UnsafeMutableRawPointer?, len:Int) throws -> Int {
+	@available(*, noasync)
+	public borrowing func receiveAvailableLength() -> Int {
+		var buildLen = 0
+		for (_, seg) in rcv_queue.makeIterator() {
+			buildLen += Int(seg.len)
+		}
+		return buildLen
+	}
+	
+	public enum ReceiveError:Swift.Error {
+		case receiveQueueEmpty
+		case lengthTooSmall
+		case missingFirstElement
+		case firstSegmentFragmentError
+	}
+	
+	@available(*, noasync)
+	public mutating func receive(_ ptr:UnsafeMutableRawPointer?, len:Int) throws(ReceiveError) -> Int {
 		guard rcv_queue.isEmpty == false else {
-			return -1
+			throw ReceiveError.receiveQueueEmpty
 		}
 		let isPeek:Bool = (len < 0)
 		let absLen = isPeek ? -len : len
 		
-		let peekSize = peekSize()
-		guard peekSize >= 0 else {
-			return -2
-		}
+		let peekSize = try peekSize()
 		guard peekSize <= absLen else {
-			return -3
+			throw ReceiveError.lengthTooSmall
 		}
 		var recover:Bool = false
 		if nrcv_que >= rcv_wnd {
@@ -275,6 +287,7 @@ public struct ikcp_cb {
 			copied += Int(seg.len)
 			if isPeek == false {
 				rcv_queue.remove(node)
+				nrcv_que &-= 1
 			}
 			guard seg.frg != 0 else {
 				break nodeLoop
@@ -311,19 +324,19 @@ public struct ikcp_cb {
 	// peek data size
 	//---------------------------------------------------------------------
 	/// Returns the size of the next segment in `rcv_queue`
-	internal mutating func peekSize() -> Int {
+	internal mutating func peekSize() throws(ReceiveError) -> Int {
 		guard rcv_queue.isEmpty == false else {
-			return -1
+			throw ReceiveError.receiveQueueEmpty
 		}
 
         guard let firstNode = rcv_queue.front, let firstSeg = firstNode.value else {
-        	return -1
+        	throw ReceiveError.missingFirstElement
         }
         if firstSeg.frg == 0 {
         	return Int(firstSeg.len)
         }
         if nrcv_que < UInt32(firstSeg.frg + 1) {
-        	return -1
+        	throw ReceiveError.firstSegmentFragmentError
         }
         var total:Int = 0
 		segLoop: for (_, seg) in rcv_queue.makeIterator() {
@@ -336,12 +349,17 @@ public struct ikcp_cb {
 	}
 	
 	
-	public mutating func send(_ inputPtr:UnsafePointer<UInt8>?, count len:Int) -> Int {
+	public enum SendError:Swift.Error {
+		case mssValueError
+		case inputLengthError
+		case invalidDataCountForReceiveWindow
+	}
+	public mutating func send(_ inputPtr:UnsafePointer<UInt8>?, count len:Int) throws(SendError) -> Int {
 		guard mss > 0 else {
-			return -1
+			throw SendError.mssValueError
 		}
 		guard len >= 0 else {
-			return -1
+			throw SendError.inputLengthError
 		}
 		var sent = 0
 		var remaining = len
@@ -363,6 +381,7 @@ public struct ikcp_cb {
 					seg.len = oldSeg.len + extend
 					seg.frg = 0
 					snd_queue.addTail(seg)
+					snd_queue.remove(tailNode)
 					remaining -= Int(extend)
 					sent += Int(extend)
 				}
@@ -380,9 +399,9 @@ public struct ikcp_cb {
 			count = (remaining + Int(mss) - 1) / Int(mss)
 		}
 		
-		guard UInt32(count) >= IKCP_WND_RCV else {
+		guard UInt32(count) < IKCP_WND_RCV else {
 			guard stream == true && sent > 0 else {
-				return -2
+				throw SendError.invalidDataCountForReceiveWindow
 			}
 			return sent	
 		}
@@ -393,8 +412,9 @@ public struct ikcp_cb {
 		for i in 0..<count {
 			let fragSize = min(remaining, Int(mss))
 			var seg = ikcp_segment(size:fragSize)
-			if let src = srcPtr, remaining > 0 {
-			
+			if let src = srcPtr, fragSize > 0 {
+				seg.data.baseAddress!.update(from:src, count:fragSize)
+				srcPtr = src + fragSize
 			}
 			seg.len = UInt32(fragSize)
 			if stream == true {
@@ -965,8 +985,7 @@ public struct ikcp_cb {
 		self.buffer = newBuf
 	}
 	
-	@discardableResult
-	mutating func setInterval(_ interval: Int) {
+	@discardableResult public mutating func setInterval(_ interval: Int) {
 		var iv = interval
 		if iv > 5_000 {
 			iv = 5_000
@@ -976,23 +995,21 @@ public struct ikcp_cb {
 		self.interval = UInt32(iv)
 	}
 	
-	/* @discardableResult
-    mutating func setNoDelay(_ nodelay: Int,
-                             interval: Int,
-                             resend: Int,
-                             nc: Int) -> Int {
-
+    @discardableResult public mutating func setNoDelay(_ nodelay:Int, interval:Int, resend:Int, nc:Int) -> Int {
         // nodelay flag
         if nodelay >= 0 {
             self.nodelay = UInt32(nodelay)
-            self.rx_minrto = (nodelay != 0) ? IKCP_RTO_NDL : IKCP_RTO_MIN
+            self.rx_minrto = (nodelay != 0) ? Int32(IKCP_RTO_NDL) : Int32(IKCP_RTO_MIN)
         }
 
         // interval (same clamping as ikcp_interval)
         if interval >= 0 {
             var iv = interval
-            if iv > 5_000 { iv = 5_000 }
-            else if iv < 10 { iv = 10 }
+            if iv > 5_000 {
+            	iv = 5_000
+            } else if iv < 10 {
+            	iv = 10
+            }
             self.interval = UInt32(iv)
         }
 
@@ -1007,5 +1024,13 @@ public struct ikcp_cb {
         }
 
         return 0
-    }*/
+    }
+    
+    // ------------------------------------------------------------
+    // MARK: – Number of pending sends (ikcp_waitsnd)
+    // ------------------------------------------------------------
+    func waitSnd() -> Int {
+        // The C version returns an int, so we keep the same type.
+        return Int(self.nsnd_buf + self.nsnd_que)
+    }
 }
