@@ -13,12 +13,12 @@ import Foundation
 	receiver = ikcp_cb(conv: conv, output: { buffer in
 		// Pass received buffer into sender
 		let _ = sender.input(data: buffer)
-	}, user: nil)
+	})
 
 	sender = ikcp_cb(conv: conv, output: { buffer in
 		// Pass received buffer into receiver
 		let _ = receiver.input(data: buffer)
-	}, user: nil)
+	})
 
 	let payload1 = [UInt8](repeating: 1, count: 1000)
 	var tempPayload1 = payload1
@@ -61,12 +61,12 @@ import Foundation
 	receiver = ikcp_cb(conv: conv, output: { buffer in
 		// Pass received buffer into sender
 		let _ = sender.input(data: buffer)
-	}, user: nil)
+	})
 
 	sender = ikcp_cb(conv: conv, output: { buffer in
 		// Pass received buffer into receiver
 		let _ = receiver.input(data: buffer)
-	}, user: nil)
+	})
 
 	let payload1 = [UInt8](repeating: 1, count: 20)
 	let payload2 = [UInt8](repeating: 2, count: 30)
@@ -122,12 +122,12 @@ import Foundation
 	receiver = ikcp_cb(conv: conv, output: { buffer in
 		// Pass received buffer into sender
 		let _ = sender.input(data: buffer)
-	}, user: nil)
+	})
 
 	sender = ikcp_cb(conv: conv, output: { buffer in
 		// Pass received buffer into receiver
 		let _ = receiver.input(data: buffer)
-	}, user: nil)
+	})
 
 	let payload1 = [UInt8](repeating: 1, count: 100000)
 	let payload2 = [UInt8](repeating: 2, count: 100000)
