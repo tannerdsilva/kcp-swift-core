@@ -3,10 +3,8 @@
 
 import PackageDescription
 
-import PackageDescription
-
 let package = Package(
-    name: "kcp-swift",
+    name: "kcp-swift-core",
     products: [
 		.library(name: "kcp-swift", targets: ["kcp-swift"]),
     ],
