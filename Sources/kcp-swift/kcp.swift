@@ -83,24 +83,42 @@ internal final class ikcp_segment {
 	internal var ts:UInt32 = 0			// Timestamp. Used for RTT
 	internal var sn:UInt32 = 0			// Sequence number. Identifies the order of the packet in the stream
 	internal var una:UInt32 = 0			// The next sequence number the sender is expecing an ACK for
-	internal var len:UInt32 = 0			// Number of bytes in `data`
+	internal let len:UInt32				// Number of bytes in `data`
 	internal var resendts:UInt32 = 0	// Resend Timestamp: Time when to retransmit if no ACK is received
 	internal var rto:UInt32 = 0			// Retransmission Timeout: calculated based on RTT; delay before a resend is triggered
 	internal var fastack:UInt32 = 0		// Fast ACK Counter: incremented when duplicate ACK's are received. If high, then does a fast retransmit
 	internal var xmit:UInt32 = 0		// Transmission Count: how many times the segment has been sent. Used for dropping
-	internal var data:UnsafeMutableBufferPointer<UInt8>!		// Slice of data being transmitted
-	internal init(size:Int) {
+	internal var data:UnsafeMutablePointer<UInt8>!		// Slice of data being transmitted
+	internal init(payloadLength size:Int) {
+		len = UInt32(size)
 		if size == 0 {
 			data = nil
 		} else {
-			data = UnsafeMutableBufferPointer<UInt8>.allocate(capacity:size)
+			data = UnsafeMutablePointer<UInt8>.allocate(capacity:size)
 		}
-		len = UInt32(size)
 	}
 	deinit {
 		if len > 0 {
 			data.deallocate()
 		}
+	}
+}
+
+extension ikcp_segment {
+	internal static func encode(_ seg: ikcp_segment, to outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
+		var off = encodeUInt32(seg.conv, outputPtr)
+		off = encodeUInt8(seg.cmd, off)
+		off = encodeUInt8(seg.frg, off)
+		off = encodeUInt16(seg.wnd, off)
+		off = encodeUInt32(seg.ts, off)
+		off = encodeUInt32(seg.sn, off)
+		off = encodeUInt32(seg.una, off)
+		off = encodeUInt32(seg.len, off)
+		if seg.len > 0 {
+			off.update(from:seg.data, count:Int(seg.len))
+			off += Int(seg.len)
+		}
+		return outputPtr.distance(to:off)
 	}
 }
 
@@ -282,7 +300,7 @@ public struct ikcp_cb {
 		var copied = 0
 		nodeLoop: for (node, seg) in rcv_queue.makeIterator() {
 			if let buf = ptr, seg.len > 0 {
-				buf.advanced(by:copied).assumingMemoryBound(to:UInt8.self).update(from:seg.data.baseAddress!, count:Int(seg.len))
+				buf.advanced(by:copied).assumingMemoryBound(to:UInt8.self).update(from:seg.data, count:Int(seg.len))
 			}
 			copied += Int(seg.len)
 			if isPeek == false {
@@ -371,14 +389,13 @@ public struct ikcp_cb {
 					let capacity = mss - oldSeg.len
 					let extend = min(UInt32(remaining), capacity)
 					let newSize = oldSeg.len + extend
-					var seg = ikcp_segment(size:Int(oldSeg.len + extend))
-					seg.data.baseAddress!.update(from:oldSeg.data.baseAddress!, count:Int(oldSeg.len))
-					let encodedUpTo = (seg.data.baseAddress! + Int(oldSeg.len))
+					var seg = ikcp_segment(payloadLength:Int(oldSeg.len + extend))
+					seg.data.update(from:oldSeg.data, count:Int(oldSeg.len))
+					let encodedUpTo = (seg.data + Int(oldSeg.len))
 					if let src = srcPtr, extend > 0 {
 						encodedUpTo.update(from:src, count:Int(extend))
 						srcPtr = src + Int(extend)
 					}
-					seg.len = oldSeg.len + extend
 					seg.frg = 0
 					snd_queue.addTail(seg)
 					snd_queue.remove(tailNode)
@@ -411,12 +428,11 @@ public struct ikcp_cb {
 		
 		for i in 0..<count {
 			let fragSize = min(remaining, Int(mss))
-			var seg = ikcp_segment(size:fragSize)
+			var seg = ikcp_segment(payloadLength:Int(fragSize))
 			if let src = srcPtr, fragSize > 0 {
-				seg.data.baseAddress!.update(from:src, count:fragSize)
+				seg.data.update(from:src, count:fragSize)
 				srcPtr = src + fragSize
 			}
-			seg.len = UInt32(fragSize)
 			if stream == true {
 				seg.frg = 0
 			} else {
@@ -592,13 +608,20 @@ public struct ikcp_cb {
 		}
 	}
 	
-	public mutating func input(_ inputPtr:UnsafePointer<UInt8>, count:Int) -> Int {
+	public enum InputError:Swift.Error {
+		case invalidInputCount
+		case convValueMismatch
+		case partialTrailingData
+		case invalidCMD
+	}
+	public mutating func input(_ inputPtr:UnsafePointer<UInt8>, count:Int) throws(InputError) {
 		let prevUna = snd_una
 		var maxAck:UInt32 = 0
 		var latestTS:UInt32 = 0
 		var gotAck = false
 		guard count >= IKCP_OVERHEAD else {
-			return -1
+			throw InputError.invalidInputCount
+			
 		}
 		
 		var ptr:UnsafeRawPointer = UnsafeRawPointer(inputPtr)
@@ -606,7 +629,7 @@ public struct ikcp_cb {
 		while left >= IKCP_OVERHEAD {
 			let conv = decodeUInt32(&ptr)
 			guard conv == self.conv else {
-				return -1
+				throw InputError.convValueMismatch
 			}
 			let cmd = decodeUInt8(&ptr)
 			let frg = decodeUInt8(&ptr)
@@ -617,7 +640,7 @@ public struct ikcp_cb {
 			let len = decodeUInt32(&ptr)
 			left -= Int(IKCP_OVERHEAD)
 			guard left >= Int(len) && len >= 0 else {
-				return -2
+				throw InputError.partialTrailingData
 			}
 			rmt_wnd = UInt32(wnd)
 			parseUna(una:una)
@@ -645,10 +668,10 @@ public struct ikcp_cb {
 						#endif
 					}
 				case IKCP_CMD_PUSH:
-					if itimeDiff(later:sn, earlier:rcv_nxt + rcv_wnd) < 0 {
+					if itimeDiff(later:sn, earlier:self.rcv_nxt + rcv_wnd) < 0 {
 						ackPush(sn:sn, ts:ts)
-						if itimeDiff(later:sn, earlier:rcv_nxt) >= 0 {
-							let seg = ikcp_segment(size:Int(len))
+						if itimeDiff(later:sn, earlier:self.rcv_nxt) >= 0 {
+							let seg = ikcp_segment(payloadLength:Int(len))
 							seg.conv = conv
 							seg.cmd = cmd
 							seg.frg = frg
@@ -656,9 +679,8 @@ public struct ikcp_cb {
 							seg.ts = ts
 							seg.sn = sn
 							seg.una = una
-							seg.len = len
 							if len > 0 {
-								seg.data.baseAddress!.update(from:ptr.assumingMemoryBound(to:UInt8.self), count:Int(len))
+								seg.data.update(from:ptr.assumingMemoryBound(to:UInt8.self), count:Int(len))
 							}
 							parseData(seg)
 						}
@@ -669,7 +691,7 @@ public struct ikcp_cb {
 					// nothing to do here
 					break;
 				default:
-					return -3
+					throw InputError.invalidCMD
 			}
 			ptr = ptr.advanced(by:Int(len))
 			left -= Int(len)
@@ -699,27 +721,12 @@ public struct ikcp_cb {
 				}
 			}
 		}
-		return 0
 	}
 	
 	//---------------------------------------------------------------------
 	// ikcp_encode_seg
 	//---------------------------------------------------------------------
-	/// Encodes a KCP segment into an array of bytes
-	internal static func encodeSegment(seg: ikcp_segment, _ outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
-		var off = encodeUInt32(seg.conv, outputPtr)
-		off = encodeUInt8(seg.cmd, off)
-		off = encodeUInt8(seg.frg, off)
-		off = encodeUInt16(seg.wnd, off)
-		off = encodeUInt32(seg.ts, off)
-		off = encodeUInt32(seg.sn, off)
-		off = encodeUInt32(seg.una, off)
-		off = encodeUInt32(seg.len, off)
-		off.update(from:seg.data.baseAddress!, count:Int(seg.len))
-		off += Int(seg.len)
-		return outputPtr.distance(to:off)
-	}
-	
+	/// Encodes a KCP segment into an array of bytes	
 	internal func wndUnused() -> UInt16 {
 		if (nrcv_que < rcv_wnd) {
 			return UInt16(rcv_wnd - nrcv_que)
@@ -737,13 +744,12 @@ public struct ikcp_cb {
 			buffer.deallocate()
 		}
 		var ptrOffset = 0
-		var seg = ikcp_segment(size:0)
+		var seg = ikcp_segment(payloadLength:0)
 		seg.conv = conv
 		seg.cmd = IKCP_CMD_ACK
 		seg.frg = 0
 		seg.wnd = wndUnused()
 		seg.una = rcv_nxt
-		seg.len = 0
 		seg.sn = 0
 		seg.ts = 0
 		for i in 0..<ackcount {
@@ -759,7 +765,7 @@ public struct ikcp_cb {
 			var sn:UInt32 = 0
 			var ts:UInt32 = 0
 			ackGet(p:Int(i), sn:&sn, ts:&ts)
-			ptrOffset += Self.encodeSegment(seg:seg, buffer + ptrOffset)
+			ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
 		}
 		ackcount = 0
 		
@@ -792,7 +798,7 @@ public struct ikcp_cb {
 				}
 				ptrOffset = 0
 			}
-			ptrOffset = Self.encodeSegment(seg:seg, buffer + ptrOffset)
+			ptrOffset = ikcp_segment.encode(seg, to:buffer + ptrOffset)
 		}
 		if (probe & IKCP_ASK_TELL) != 0 {
 			seg.cmd = IKCP_CMD_WINS
@@ -881,10 +887,10 @@ public struct ikcp_cb {
 					ptrOffset = 0
 				}
 				
-				ptrOffset += Self.encodeSegment(seg:seg, buffer + ptrOffset)
+				ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
 				
 				if seg.len > 0 {
-					(buffer + ptrOffset).update(from:seg.data.baseAddress!, count:Int(seg.len))
+					(buffer + ptrOffset).update(from:seg.data, count:Int(seg.len))
 					ptrOffset += Int(seg.len)
 				}
 				
