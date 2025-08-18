@@ -70,7 +70,9 @@ let IKCP_PROBE_INIT:UInt32 = 7000
 let IKCP_PROBE_LIMIT:UInt32 = 120000
 let IKCP_FASTACK_LIMIT:UInt32 = 5
 
-internal final class ikcp_segment {
+internal typealias ikcp_segment = ikcp_segment_v2<Void>
+
+internal final class ikcp_segment_v2<ikcp_segment_associated_type> {
 	internal var conv:UInt32 = 0 		// Conversation ID
 	internal var cmd:UInt8 = 0			// Command type (type of segment). 81: PUSH(data), 82: ACK, 83: WASK(window probe request), 84: WINS(window size response)
 	internal var frg:UInt8 = 0			// Fragment index, First Fragment: n-1, Last Fragment: 0
@@ -84,7 +86,9 @@ internal final class ikcp_segment {
 	internal var fastack:UInt32 = 0		// Fast ACK Counter: incremented when duplicate ACK's are received. If high, then does a fast retransmit
 	internal var xmit:UInt32 = 0		// Transmission Count: how many times the segment has been sent. Used for dropping
 	internal var data:UnsafeMutablePointer<UInt8>!		// Slice of data being transmitted
+	internal var associatedInstances:[ikcp_segment_associated_type]?
 	internal init(payloadLength size:Int) {
+		associatedInstances = nil
 		len = UInt32(size)
 		if size == 0 {
 			data = nil
@@ -92,7 +96,7 @@ internal final class ikcp_segment {
 			data = UnsafeMutablePointer<UInt8>.allocate(capacity:size)
 		}
 	}
-	internal init(copying toClone:ikcp_segment, payloadLength size:Int) {
+	internal init(copying toClone:ikcp_segment_v2<ikcp_segment_associated_type>, payloadLength size:Int) {
 		self.conv = toClone.conv
 		self.cmd = toClone.cmd
 		self.frg = toClone.frg
@@ -110,6 +114,7 @@ internal final class ikcp_segment {
 		} else {
 			data = UnsafeMutablePointer<UInt8>.allocate(capacity:size)
 		}
+		self.associatedInstances = toClone.associatedInstances
 	}
 	deinit {
 		if len > 0 {
@@ -119,7 +124,7 @@ internal final class ikcp_segment {
 }
 
 extension ikcp_segment {
-	internal static func encode(_ seg: ikcp_segment, to outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
+	internal static func encode(_ seg: ikcp_segment_v2<Void>, to outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
 		var off = encodeUInt32(seg.conv, outputPtr)
 		off = encodeUInt8(seg.cmd, off)
 		off = encodeUInt8(seg.frg, off)
@@ -154,6 +159,7 @@ public struct ikcp_cb {
 	/// next expected segment number from peer
 	internal var rcv_nxt:UInt32
 
+	/// timestamp of the most recent packet received (used for RTT calculation)
 	internal var ts_recent:UInt32	// Timestamp of the most recent packet received (used for RTT)
 	internal var ts_lastack:UInt32	// Timestamp of the last ACK sent
 	internal var ssthresh:UInt32	// Slow start theshold
@@ -189,10 +195,10 @@ public struct ikcp_cb {
 	internal var dead_link:UInt32	// Max number of retransmits before considering the link dead
 	internal var incr:UInt32
 
-	internal var snd_queue:LinkedList<ikcp_segment>		// user data waiting to be segmented and sent out
-	internal var rcv_queue:LinkedList<ikcp_segment>		// Fully reassembled segments ready to return to application
-	internal var snd_buf:LinkedList<ikcp_segment>		// Segments sent and waiting to be ACKed
-	internal var rcv_buf:LinkedList<ikcp_segment>		// Segments received out of oder and waiting to be reassembled
+	internal var snd_queue:LinkedList<ikcp_segment_v2<Void>>		// user data waiting to be segmented and sent out
+	internal var rcv_queue:LinkedList<ikcp_segment_v2<Void>>		// Fully reassembled segments ready to return to application
+	internal var snd_buf:LinkedList<ikcp_segment_v2<Void>>		// Segments sent and waiting to be ACKed
+	internal var rcv_buf:LinkedList<ikcp_segment_v2<Void>>		// Segments received out of oder and waiting to be reassembled
 	
 	/// acklist is nil when ackcount == 0. variable is safe to access any time ackcount > 0
 	internal var acklist:UnsafeMutableBufferPointer<UInt32>!
@@ -410,7 +416,7 @@ public struct ikcp_cb {
 					let capacity = mss - oldSeg.len
 					let extend = min(UInt32(remaining), capacity)
 					let newSize = oldSeg.len + extend
-					var seg = ikcp_segment(payloadLength:Int(oldSeg.len + extend))
+					var seg = ikcp_segment_v2<Void>(payloadLength:Int(oldSeg.len + extend))
 					seg.data.update(from:oldSeg.data, count:Int(oldSeg.len))
 					let encodedUpTo = (seg.data + Int(oldSeg.len))
 					if let src = srcPtr, extend > 0 {
@@ -449,7 +455,7 @@ public struct ikcp_cb {
 		
 		for i in 0..<count {
 			let fragSize = min(remaining, Int(mss))
-			var seg = ikcp_segment(payloadLength:Int(fragSize))
+			var seg = ikcp_segment_v2<Void>(payloadLength:Int(fragSize))
 			if let src = srcPtr, fragSize > 0 {
 				seg.data.update(from:src, count:fragSize)
 				srcPtr = src + fragSize
@@ -594,14 +600,14 @@ public struct ikcp_cb {
 	// parse data
 	//---------------------------------------------------------------------
 	/// Called every time data is received. Removes out-of-window or duplicate segments, insert new segments into `rec_buf`, and moves in order segments to `rec_queue`
-	internal mutating func parseData(_ newseg: ikcp_segment) {
+	internal mutating func parseData(_ newseg: ikcp_segment_v2<Void>) {
 		let sn = newseg.sn
 		var isDuplicate = false
 		guard itimeDiff(later:sn, earlier:rcv_nxt &+ rcv_wnd) < 0, itimeDiff(later:sn, earlier:rcv_nxt) >= 0 else {
 			return
 		}
 		
-		var insertAfterNode:LinkedList<ikcp_segment>.Node? = nil
+		var insertAfterNode:LinkedList<ikcp_segment_v2<Void>>.Node? = nil
 		segLoop: for (curNode, seg) in rcv_buf.makeReverseIterator() {
 			guard seg.sn != sn else {
 				isDuplicate = true
@@ -692,7 +698,7 @@ public struct ikcp_cb {
 					if itimeDiff(later:sn, earlier:self.rcv_nxt + rcv_wnd) < 0 {
 						ackPush(sn:sn, ts:ts)
 						if itimeDiff(later:sn, earlier:self.rcv_nxt) >= 0 {
-							let seg = ikcp_segment(payloadLength:Int(len))
+							let seg = ikcp_segment_v2<Void>(payloadLength:Int(len))
 							seg.conv = conv
 							seg.cmd = cmd
 							seg.frg = frg
@@ -765,7 +771,7 @@ public struct ikcp_cb {
 			buffer.deallocate()
 		}
 		var ptrOffset = 0
-		var seg = ikcp_segment(payloadLength:0)
+		var seg = ikcp_segment_v2<Void>(payloadLength:0)
 		seg.conv = conv
 		seg.cmd = IKCP_CMD_ACK
 		seg.frg = 0
@@ -786,7 +792,7 @@ public struct ikcp_cb {
 			var sn:UInt32 = 0
 			var ts:UInt32 = 0
 			ackGet(p:Int(i), sn:&sn, ts:&ts)
-			ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
+			ptrOffset += ikcp_segment_v2<Void>.encode(seg, to:buffer + ptrOffset)
 		}
 		ackcount = 0
 		
@@ -819,7 +825,7 @@ public struct ikcp_cb {
 				}
 				ptrOffset = 0
 			}
-			ptrOffset = ikcp_segment.encode(seg, to:buffer + ptrOffset)
+			ptrOffset = ikcp_segment_v2<Void>.encode(seg, to:buffer + ptrOffset)
 		}
 		if (probe & IKCP_ASK_TELL) != 0 {
 			seg.cmd = IKCP_CMD_WINS
@@ -908,7 +914,7 @@ public struct ikcp_cb {
 					ptrOffset = 0
 				}
 				
-				ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
+				ptrOffset += ikcp_segment_v2<Void>.encode(seg, to:buffer + ptrOffset)
 				
 				if seg.xmit >= dead_link {
 					state = UInt32(bitPattern:Int32(-1))
