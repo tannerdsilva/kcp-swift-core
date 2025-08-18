@@ -70,8 +70,8 @@ let IKCP_PROBE_INIT:UInt32 = 7000
 let IKCP_PROBE_LIMIT:UInt32 = 120000
 let IKCP_FASTACK_LIMIT:UInt32 = 5
 
-extension ikcp_cb_v2.ikcp_segment {
-	internal static func encode(_ seg: ikcp_cb_v2.ikcp_segment, to outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
+extension ikcp_cb.ikcp_segment {
+	internal static func encode(_ seg: ikcp_cb.ikcp_segment, to outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
 		var off = encodeUInt32(seg.conv, outputPtr)
 		off = encodeUInt8(seg.cmd, off)
 		off = encodeUInt8(seg.frg, off)
@@ -110,9 +110,8 @@ public enum InputError:Swift.Error {
 
 public struct InvalidMTUError:Swift.Error {}
 
-internal typealias ikcp_cb = ikcp_cb_v2<Void>
 /// KCP control block. Main structrue that represents a KCP session.
-public struct ikcp_cb_v2<assosiated_type> {
+public struct ikcp_cb<assosiated_type> {
 	internal final class ikcp_segment {
 		internal var conv:UInt32 = 0 		// Conversation ID
 		internal var cmd:UInt8 = 0			// Command type (type of segment). 81: PUSH(data), 82: ACK, 83: WASK(window probe request), 84: WINS(window size response)

@@ -3,12 +3,12 @@ import Testing
 
 @Suite(.serialized)
 final class kcp_core_tests {
-	var kcp:ikcp_cb!
+	var kcp:ikcp_cb<Void>!
     var capturedPackets: [[UInt8]] = []   // what the output handler sees
 	init() {
 		// The output handler simply stores the raw bytes that would have been
 		// sent on the UDP socket – this lets us inspect `flush()` later.
-		let outHandler: ikcp_cb.OutputHandler = { [weak self] buffer, _ in
+		let outHandler: ikcp_cb<Void>.OutputHandler = { [weak self] buffer, _ in
 			guard let self = self else { return }
 			// `buffer` is a mutable view over the packet that `flush`
 			// generated.  Copy it so the test can keep it after the closure
@@ -17,7 +17,7 @@ final class kcp_core_tests {
 			self.capturedPackets.append(bytes)
 		}
 		
-		kcp = ikcp_cb(conv:0x11223344, output: outHandler)
+		kcp = ikcp_cb<Void>(conv:0x11223344, output: outHandler)
 		
 		// Reasonable defaults – the same values used in the send‑tests.
 		kcp.mtu = 1500
@@ -37,7 +37,7 @@ final class kcp_core_tests {
     // MARK: - Helper: create a dummy segment in snd_buf
     // -----------------------------------------------------------------
     private func insertDummySentSegment(sn: UInt32) {
-		let seg = ikcp_cb_v2<Void>.ikcp_segment(payloadLength: 0)
+		let seg = ikcp_cb<Void>.ikcp_segment(payloadLength: 0)
         seg.sn = sn
         kcp.snd_buf.add(seg)
         kcp.nsnd_buf &+= 1
@@ -66,7 +66,7 @@ final class kcp_core_tests {
         // -------------------------------------------------------------
         let now: UInt32 = 123_456               // current time (ms)
         kcp.current = now + 10
-        let ack  = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:0)
+        let ack  = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
 		ack.conv = kcp.conv
 		ack.cmd = IKCP_CMD_ACK
 		ack.frg = 0
@@ -81,7 +81,7 @@ final class kcp_core_tests {
 			buffer.deallocate()
 		}
 		
-		#expect(ikcp_cb_v2<Void>.ikcp_segment.encode(ack, to:buffer) == Int(IKCP_OVERHEAD))
+		#expect(ikcp_cb<Void>.ikcp_segment.encode(ack, to:buffer) == Int(IKCP_OVERHEAD))
 		
         // Feed the packet to the KCP instance.
         try kcp.input(buffer, count:Int(IKCP_OVERHEAD))
@@ -107,7 +107,7 @@ final class kcp_core_tests {
     func inputPushCreatesSegmentInRcvQueue() throws {
         // Build a PUSH segment that carries the payload “hello”.
         let payload = Array("hello".utf8)
-        let push  = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:payload.count)
+        let push  = ikcp_cb<Void>.ikcp_segment(payloadLength:payload.count)
 		push.conv = kcp.conv
 		push.cmd = IKCP_CMD_PUSH
 		push.frg = 0
@@ -122,7 +122,7 @@ final class kcp_core_tests {
 		defer {
 			encodeBuffer.deallocate()
 		}
-		#expect(ikcp_cb_v2<Void>.ikcp_segment.encode(push, to:encodeBuffer) == (Int(IKCP_OVERHEAD) + payload.count))
+		#expect(ikcp_cb<Void>.ikcp_segment.encode(push, to:encodeBuffer) == (Int(IKCP_OVERHEAD) + payload.count))
 		try kcp.input(encodeBuffer, count:Int(IKCP_OVERHEAD) + payload.count)
 		
 		 // The segment must now be in rcv_queue and rcv_nxt advanced.
@@ -153,7 +153,7 @@ final class kcp_core_tests {
 		}
 		
 		func mkPush(sn:UInt32, byte:UInt8) {
-			let push  = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:1)
+			let push  = ikcp_cb<Void>.ikcp_segment(payloadLength:1)
 			push.conv = kcp.conv
 			push.cmd = IKCP_CMD_PUSH
 			push.frg = 0
@@ -162,7 +162,7 @@ final class kcp_core_tests {
 			push.sn = sn
 			push.una = 0
 			push.data.pointee = byte
-			#expect(ikcp_cb_v2<Void>.ikcp_segment.encode(push, to:encodeBuffer) == (Int(IKCP_OVERHEAD) + 1))
+			#expect(ikcp_cb<Void>.ikcp_segment.encode(push, to:encodeBuffer) == (Int(IKCP_OVERHEAD) + 1))
 		}
 		
 		kcp.rcv_nxt = 10
@@ -195,7 +195,7 @@ final class kcp_core_tests {
 			encodeBuffer.deallocate()
 		}
 
-		let wask = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:0)
+		let wask = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
 		wask.conv = kcp.conv
 		wask.cmd = IKCP_CMD_WASK
 		wask.frg = 0
@@ -204,7 +204,7 @@ final class kcp_core_tests {
 		wask.sn = 0
 		wask.una = 0
 		
-        #expect(ikcp_cb_v2<Void>.ikcp_segment.encode(wask, to:encodeBuffer) == Int(IKCP_OVERHEAD))
+        #expect(ikcp_cb<Void>.ikcp_segment.encode(wask, to:encodeBuffer) == Int(IKCP_OVERHEAD))
 
         #expect(kcp.probe == 0)
         try kcp.input(encodeBuffer, count:buffLen)
@@ -222,7 +222,7 @@ final class kcp_core_tests {
 			encodeBuffer.deallocate()
 		}
 		let advertisedWnd: UInt16 = 1_234
-        let wins = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:0)
+        let wins = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
         wins.conv = kcp.conv
         wins.cmd = IKCP_CMD_WINS
         wins.frg = 0
@@ -234,7 +234,7 @@ final class kcp_core_tests {
         let beforeProbe  = kcp.probe
         
         #expect(kcp.rmt_wnd != UInt32(advertisedWnd))
-		#expect(ikcp_cb_v2<Void>.ikcp_segment.encode(wins, to:encodeBuffer) == Int(IKCP_OVERHEAD))
+		#expect(ikcp_cb<Void>.ikcp_segment.encode(wins, to:encodeBuffer) == Int(IKCP_OVERHEAD))
 
        	try kcp.input(encodeBuffer, count:buffLen)
 
@@ -249,7 +249,7 @@ final class kcp_core_tests {
 			encodeBuffer.deallocate()
 		}
         for sn in 0..<3 {
-            let seg = ikcp_cb_v2<Void>.ikcp_segment(payloadLength: 0)
+            let seg = ikcp_cb<Void>.ikcp_segment(payloadLength: 0)
             seg.sn = UInt32(sn)
             kcp.snd_buf.add(seg)
             kcp.nsnd_buf &+= 1
@@ -257,7 +257,7 @@ final class kcp_core_tests {
         kcp.snd_nxt = 3
         kcp.current = 2_000
         kcp.interval = 100
-		let ack0 = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:0)
+		let ack0 = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
 		ack0.conv = kcp.conv
 		ack0.cmd = IKCP_CMD_ACK
 		ack0.frg = 0
@@ -265,8 +265,8 @@ final class kcp_core_tests {
 		ack0.ts = 1000
 		ack0.sn = 0
 		ack0.una = 1
-		#expect(ikcp_cb_v2<Void>.ikcp_segment.encode(ack0, to:encodeBuffer) == Int(IKCP_OVERHEAD))
-		let ack2 = ikcp_cb_v2<Void>.ikcp_segment(payloadLength:0)
+		#expect(ikcp_cb<Void>.ikcp_segment.encode(ack0, to:encodeBuffer) == Int(IKCP_OVERHEAD))
+		let ack2 = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
 		ack2.conv = kcp.conv
 		ack2.cmd = IKCP_CMD_ACK
 		ack2.frg = 0
@@ -274,7 +274,7 @@ final class kcp_core_tests {
 		ack2.ts = 1000
 		ack2.sn = 2
 		ack2.una = 3
-		#expect(ikcp_cb_v2<Void>.ikcp_segment.encode(ack2, to:encodeBuffer + Int(IKCP_OVERHEAD)) == Int(IKCP_OVERHEAD))
+		#expect(ikcp_cb<Void>.ikcp_segment.encode(ack2, to:encodeBuffer + Int(IKCP_OVERHEAD)) == Int(IKCP_OVERHEAD))
 		try kcp.input(encodeBuffer, count:Int(IKCP_OVERHEAD) * 2)
 		#expect(kcp.snd_una == 3)
 		#expect(kcp.cwnd > 1)
@@ -310,9 +310,9 @@ final class kcp_core_tests {
 
 @Suite(.serialized)
 struct kcp_send_tests {
-    var kcp: ikcp_cb
+    var kcp: ikcp_cb<Void>
     init() {
-        kcp = ikcp_cb(conv: 0x11223344, output: nil)
+        kcp = ikcp_cb<Void>(conv: 0x11223344, output: nil)
         kcp.mtu = 1500
         kcp.mss = 1000
         kcp.stream = false
@@ -382,10 +382,10 @@ import Foundation
 @Test func testSendAndReceiveMultipleLargeSegments() throws {
 	let conv: UInt32 = 0x1234
 	
-	var receiver: ikcp_cb! = nil
-	var sender: ikcp_cb! = nil
+	var receiver: ikcp_cb<Void>! = nil
+	var sender: ikcp_cb<Void>! = nil
 
-	receiver = ikcp_cb(conv: conv, output: { buffer, _  in
+	receiver = ikcp_cb<Void>(conv: conv, output: { buffer, _  in
 		do {
 			if let baseAddress = buffer.baseAddress {
 				let _ = try sender.input(baseAddress, count: buffer.count)
@@ -395,7 +395,7 @@ import Foundation
 		}
 	})
 
-	sender = ikcp_cb(conv: conv, output: { buffer, _ in
+	sender = ikcp_cb<Void>(conv: conv, output: { buffer, _ in
 		do {
 			if let baseAddress = buffer.baseAddress {
 				let _ = try receiver.input(baseAddress, count: buffer.count)
