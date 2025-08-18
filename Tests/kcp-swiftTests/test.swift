@@ -241,15 +241,13 @@ final class kcp_core_tests {
         #expect(kcp.rmt_wnd == UInt32(advertisedWnd))
         #expect(kcp.probe == beforeProbe)
     }
-	@Test
-    func fastAckAggregatesHighestSn() throws {
+    
+	@Test func fastAckAggregatesHighestSn() throws {
 		let buffLen = Int(IKCP_OVERHEAD) * 2
 		let encodeBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity:buffLen)
 		defer {
 			encodeBuffer.deallocate()
 		}
-
-        // Insert three dummy segments (sn = 0,1,2) into snd_buf.
         for sn in 0..<3 {
             let seg = ikcp_segment(payloadLength: 0)
             seg.sn = UInt32(sn)
@@ -278,104 +276,89 @@ final class kcp_core_tests {
 		ack2.una = 3
 		#expect(ikcp_segment.encode(ack2, to:encodeBuffer + Int(IKCP_OVERHEAD)) == Int(IKCP_OVERHEAD))
 		try kcp.input(encodeBuffer, count:Int(IKCP_OVERHEAD) * 2)
-//		try kcp.input(encodeBuffer + Int(IKCP_OVERHEAD), count:Int(IKCP_OVERHEAD) )
 		#expect(kcp.snd_una == 3)
 		#expect(kcp.cwnd > 1)
 		#expect(kcp.rx_srtt != 0)
+	}
+	
+	@Test func updateTriggersFlushAtInterval() throws {
+		kcp.interval = 50
+		kcp.current  = 1_000
+		kcp.ts_flush = 0
+
+		kcp.probe = IKCP_ASK_TELL
+		kcp.ackPush(sn: 0, ts: kcp.current)
+		kcp.update(current: kcp.current)
+	
+		#expect(self.capturedPackets.isEmpty == false, "first update must call flush() and produce a packet")
+		let firstFlush = kcp.ts_flush
+		kcp.current &+= 20
+		kcp.update(current: kcp.current)
+	
+		#expect(kcp.ts_flush == firstFlush, "ts_flush must stay unchanged when the interval has not elapsed")
+		#expect(self.capturedPackets.count == 1, "still only the first packet should have been emitted")
+	
+		kcp.current &+= 40
+		kcp.probe = IKCP_ASK_TELL
+		kcp.ackPush(sn:1, ts: kcp.current)
+		kcp.update(current: kcp.current)
+	
+		#expect(kcp.ts_flush > firstFlush, "second flush must have advanced ts_flush")
+		#expect(self.capturedPackets.count == 2, "two flushes should be recorded")
 	}
 }
 
 @Suite(.serialized)
 struct kcp_send_tests {
-
-    // -----------------------------------------------------------------
-    // MARK: – Helper – a fresh, minimally‑configured KCP instance
-    // -----------------------------------------------------------------
     var kcp: ikcp_cb
-
     init() {
-        // The constructor you already have – the output handler is not needed
-        // for the `ikcp_send` tests, so we pass `nil`.
         kcp = ikcp_cb(conv: 0x11223344, output: nil)
-
-        // Reasonable defaults for the tests
         kcp.mtu = 1500
-        kcp.mss = 1000          // “Maximum Segment Size”
-        kcp.stream = false      // most tests use non‑stream mode
+        kcp.mss = 1000
+        kcp.stream = false
     }
-
-    // -----------------------------------------------------------------
-    // MARK: – 1️⃣  Simple, non‑fragmented send
-    // -----------------------------------------------------------------
-    @Test
-    mutating func sendSinglePacket() throws {
-        // 500 bytes < mss → only one segment should be created
+    @Test mutating func sendSinglePacket() throws {
         var payload = [UInt8](repeating: 0xAB, count: 500)
-
         let sent = try kcp.send(&payload, count:payload.count)
-
-        #expect(sent == payload.count)                 // all bytes were queued
-        #expect(kcp.snd_queue.count == 1)              // exactly one segment
-
-        // Grab the segment that was inserted into the list
+        #expect(sent == payload.count)
+        #expect(kcp.snd_queue.count == 1)
         let seg = kcp.snd_queue.front!.value!
-
-        #expect(seg.len == UInt32(payload.count))      // length recorded correctly
-        #expect(seg.frg == 0)                          // no fragmentation
-
-        // Verify the data inside the segment is identical to the source
+        #expect(seg.len == UInt32(payload.count))
+        #expect(seg.frg == 0)
         for i in 0..<payload.count {
             #expect(seg.data[i] == payload[i])
         }
     }
     
-	@Test
-	mutating func sendFragmentedPacket() throws {
-		// 2500 bytes → 3 fragments when mss = 1000
+	@Test mutating func sendFragmentedPacket() throws {
 		let total = 2500
 		var payload = (0..<total).map { UInt8($0 & 0xFF) }
-
 		let sent = try kcp.send(&payload, count:total)
-
-		#expect(sent == total)                         // everything queued
-		#expect(kcp.snd_queue.count == 3)              // 3 fragments
-
-		// Walk the list forward and check size / frg fields
+		#expect(sent == total)
+		#expect(kcp.snd_queue.count == 3)
 		var expectedSize = total
-		var expectedFrg: UInt8 = 2                      // count‑1 for the first fragment
-
+		var expectedFrg: UInt8 = 2
 		for (cur, seg) in kcp.snd_queue.makeIterator() {
 			let thisSize = min(expectedSize, Int(kcp.mss))
 			#expect(seg.len == UInt32(thisSize))
 			#expect(seg.frg == expectedFrg)
-
 			expectedSize -= thisSize
 			if expectedFrg > 0 { expectedFrg -= 1 }
 		}
 		#expect(expectedSize == 0)
 	}
 	
-	@Test
-	mutating func streamModeExtension() throws {
-		kcp.stream = true                     // enable stream mode
-
-		// 1️⃣ First chunk – 600 bytes (still < mss)
+	@Test mutating func streamModeExtension() throws {
+		kcp.stream = true
 		var first = [UInt8](repeating: 0x01, count: 600)
 		let sent1 = try kcp.send(&first, count:first.count)
-		#expect(kcp.snd_queue.count == 1)     // one segment only
-
-		// 2️⃣ Second chunk – 300 bytes, should extend the existing segment
+		#expect(kcp.snd_queue.count == 1)
 		var second = [UInt8](repeating: 0x02, count: 300)
 		let sent2 = try kcp.send(&second, count: second.count)
-
-		#expect(sent2 == 300)                 // all 300 bytes were accepted
-		#expect(kcp.snd_queue.count == 1)     // still only one segment
-
-		// Verify the merged segment
+		#expect(sent2 == 300)
+		#expect(kcp.snd_queue.count == 1)
 		let seg = kcp.snd_queue.front!.value!
-		#expect(seg.len == 900)               // 600 + 300
-
-		// First 600 bytes = 0x01, next 300 bytes = 0x02
+		#expect(seg.len == 900)
 		for i in 0..<600 {
 			#expect(seg.data[i] == 0x01)
 		}
@@ -383,22 +366,14 @@ struct kcp_send_tests {
 			#expect(seg.data[i] == 0x02)
 		}
 	}
-	
-    // -----------------------------------------------------------------
-    // MARK: – 5️⃣  Window‑overflow guard (returns –2)
-    // -----------------------------------------------------------------
-    @Test
-    mutating func windowOverflowReturnsMinusTwo() throws {
-        // Force the fragment count to be >= IKCP_WND_RCV (256)
-        // Setting mss = 1 makes every byte a fragment.
+
+    @Test mutating func windowOverflowReturnsMinusTwo() throws {
         kcp.mss = 1
-
-        var payload = [UInt8](repeating: 0xFF, count:Int(IKCP_WND_RCV))   // 256 fragments
-
+        var payload = [UInt8](repeating: 0xFF, count:Int(IKCP_WND_RCV))
 		do {
 			_ = try kcp.send(&payload, count: payload.count)
 		} catch ikcp_cb.SendError.invalidDataCountForReceiveWindow {
-			#expect(kcp.snd_queue.isEmpty)        // nothing was queued
+			#expect(kcp.snd_queue.isEmpty)
 		}
     }
 }
