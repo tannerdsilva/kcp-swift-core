@@ -5,6 +5,9 @@ import PackageDescription
 
 let package = Package(
     name: "kcp-swift-core",
+	platforms:[
+		.macOS(.v15)
+	],
     products: [
 		.library(name: "kcp-swift", targets: ["kcp-swift"]),
     ],

@@ -1,8 +1,3 @@
-
-#if canImport(RAW)
-import RAW
-#endif
-
 fileprivate func decodeUInt32(_ ptr:inout UnsafeRawPointer) -> UInt32 {
 	defer {
 		ptr += MemoryLayout<UInt32>.size
