@@ -275,7 +275,7 @@ public struct ikcp_cb {
 
 		self.fastresend = 0
 		self.fastlimit = Int64(IKCP_FASTACK_LIMIT)
-		self.nocwnd = 0
+		self.nocwnd = 1
 		
 		self.stream = false
 		self.output = output
