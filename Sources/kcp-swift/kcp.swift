@@ -487,7 +487,7 @@ public struct ikcp_cb {
 				delta = -delta
 			}
 			rx_rttval = ((3 * rx_rttval + delta) / 4)
-			rx_srtt = (7 * rx_srtt + rtt)
+			rx_srtt = (7 * rx_srtt + rtt) / 8
 			if rx_srtt < 1 {
 				rx_srtt = 1
 			}
