@@ -97,6 +97,25 @@ internal final class ikcp_segment {
 			data = UnsafeMutablePointer<UInt8>.allocate(capacity:size)
 		}
 	}
+	internal init(copying toClone:ikcp_segment, payloadLength size:Int) {
+		self.conv = toClone.conv
+		self.cmd = toClone.cmd
+		self.frg = toClone.frg
+		self.wnd = toClone.wnd
+		self.ts = toClone.ts
+		self.sn = toClone.sn
+		self.una = toClone.una
+		self.resendts = toClone.resendts
+		self.rto = toClone.rto
+		self.fastack = toClone.fastack
+		self.xmit = toClone.xmit
+		self.len = UInt32(size)
+		if size == 0 {
+			data = nil
+		} else {
+			data = UnsafeMutablePointer<UInt8>.allocate(capacity:size)
+		}
+	}
 	deinit {
 		if len > 0 {
 			data.deallocate()
@@ -124,14 +143,21 @@ extension ikcp_segment {
 
 /// KCP control block. Main structrue that represents a KCP session.
 public struct ikcp_cb {
-	internal var conv:UInt32		// Conversation ID
-	internal var mtu:UInt32			// Maximum Transmission Unit: Largest UDP packet accepted
-	internal var mss:UInt32			// Maximum Segment Size: Largest amount of data per segment
-	internal var state:UInt32		// Connection State: 0 = normal, -1 = dead
+	/// conversation id
+	internal var conv:UInt32
+	/// maximum transmission unit: the largest udp packet accepted
+	internal var mtu:UInt32
+	/// maximum segment size: largest amount of data per segment
+	internal var mss:UInt32
+	/// connection state: 0 = normal, -1 = dead
+	internal var state:UInt32
 	
-	internal var snd_una:UInt32		// Earliest Unacknowledged Segment
-	internal var snd_nxt:UInt32		// Next segment number to send
-	internal var rcv_nxt:UInt32		// Next expected segment number from peer
+	/// earliest unacknowledged segment
+	internal var snd_una:UInt32
+	/// next segment number to send
+	internal var snd_nxt:UInt32
+	/// next expected segment number from peer
+	internal var rcv_nxt:UInt32
 
 	internal var ts_recent:UInt32	// Timestamp of the most recent packet received (used for RTT)
 	internal var ts_lastack:UInt32	// Timestamp of the last ACK sent
@@ -888,11 +914,6 @@ public struct ikcp_cb {
 				}
 				
 				ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
-				
-				if seg.len > 0 {
-					(buffer + ptrOffset).update(from:seg.data, count:Int(seg.len))
-					ptrOffset += Int(seg.len)
-				}
 				
 				if seg.xmit >= dead_link {
 					state = UInt32(bitPattern:Int32(-1))
