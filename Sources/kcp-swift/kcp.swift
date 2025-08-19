@@ -215,10 +215,10 @@ public struct ikcp_cb<assosiated_type> {
 	internal var dead_link:UInt32	// Max number of retransmits before considering the link dead
 	internal var incr:UInt32
 
-	internal var snd_queue:LinkedList<ikcp_segment>		// user data waiting to be segmented and sent out
-	internal var rcv_queue:LinkedList<ikcp_segment>		// Fully reassembled segments ready to return to application
-	internal var snd_buf:LinkedList<ikcp_segment>		// Segments sent and waiting to be ACKed
-	internal var rcv_buf:LinkedList<ikcp_segment>		// Segments received out of oder and waiting to be reassembled
+	internal var snd_queue = LinkedList<ikcp_segment>()		// user data waiting to be segmented and sent out
+	internal var rcv_queue = LinkedList<ikcp_segment>()		// Fully reassembled segments ready to return to application
+	internal var snd_buf = LinkedList<ikcp_segment>()		// Segments sent and waiting to be ACKed
+	internal var rcv_buf = LinkedList<ikcp_segment>()	// Segments received out of oder and waiting to be reassembled
 	
 	/// acklist is nil when ackcount == 0. variable is safe to access any time ackcount > 0
 	internal var acklist:UnsafeMutableBufferPointer<UInt32>!
@@ -237,9 +237,9 @@ public struct ikcp_cb<assosiated_type> {
 	internal var buffer:UnsafeMutablePointer<UInt8>! = nil
 	
 	public typealias OutputHandler = ((UnsafeMutableBufferPointer<UInt8>, assosiated_type?) -> Void)
-	internal var output:OutputHandler? = nil
+	internal var defaultOutputHandler:OutputHandler? = nil
 
-	public init(conv:UInt32, output:OutputHandler?) {
+	public init(conv:UInt32) {
 		self.conv = conv
 		self.mtu = IKCP_MTU_DEF
 		self.mss = mtu - IKCP_OVERHEAD
@@ -284,11 +284,6 @@ public struct ikcp_cb<assosiated_type> {
 		self.dead_link = IKCP_DEADLINK
 		self.incr = 0
 
-		self.snd_queue = .init()
-		self.rcv_queue = .init()
-		self.snd_buf = .init()
-		self.rcv_buf = .init()
-
 		self.acklist = nil
 		self.ackcount = 0
 		self.ackblock = 0
@@ -298,7 +293,6 @@ public struct ikcp_cb<assosiated_type> {
 		self.nocwnd = 1
 		
 		self.stream = false
-		self.output = output
 	}
 	
 	@available(*, noasync)
@@ -654,7 +648,6 @@ public struct ikcp_cb<assosiated_type> {
 		var gotAck = false
 		guard count >= IKCP_OVERHEAD else {
 			throw InputError.invalidInputCount
-			
 		}
 		
 		var ptr:UnsafeRawPointer = UnsafeRawPointer(inputPtr)
@@ -767,7 +760,7 @@ public struct ikcp_cb<assosiated_type> {
 		return 0
 	}
 	
-	internal mutating func flush() { 
+	internal mutating func flush(_ output:OutputHandler) { 
 		guard updated != 0 else {
 			return
 		}
@@ -788,11 +781,7 @@ public struct ikcp_cb<assosiated_type> {
 		for i in 0..<ackcount {
 			let needed = ptrOffset + Int(IKCP_OVERHEAD)
 			if needed > Int(mtu) {
-				if output != nil {
-					output!(UnsafeMutableBufferPointer<UInt8>(start:buffer, count:ptrOffset), nil)
-				} else {
-					// log a warning or something?
-				}
+				output(UnsafeMutableBufferPointer<UInt8>(start:buffer, count:ptrOffset), nil)
 				ptrOffset = 0
 			}
 			var sn:UInt32 = 0
@@ -824,11 +813,7 @@ public struct ikcp_cb<assosiated_type> {
 		if (probe & IKCP_ASK_SEND) != 0 {
 			seg.cmd = IKCP_CMD_WASK
 			if ptrOffset + Int(IKCP_OVERHEAD) > Int(mtu) {
-				if output != nil {
-					output!(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), nil)
-				} else {
-					// log a warning or something?
-				}
+				output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), nil)
 				ptrOffset = 0
 			}
 			ptrOffset = ikcp_segment.encode(seg, to:buffer + ptrOffset)
@@ -836,11 +821,7 @@ public struct ikcp_cb<assosiated_type> {
 		if (probe & IKCP_ASK_TELL) != 0 {
 			seg.cmd = IKCP_CMD_WINS
 			if ptrOffset + Int(IKCP_OVERHEAD) > Int(mtu) {
-				if output != nil {
-					output!(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), nil)
-				} else {
-					// log a warning or something?
-				}
+				output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), nil)
 			}
 		}
 		probe = 0
@@ -914,11 +895,7 @@ public struct ikcp_cb<assosiated_type> {
 				
 
 				if ptrOffset + need > Int(mtu) {
-					if output != nil {
-						output!(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), node.prev.value!.associatedInstances)
-					} else {
-						 // log a warning or something?
-					}
+					output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), node.prev.value!.associatedInstances)
 					ptrOffset = 0
 				}
 				ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
@@ -930,11 +907,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 		
 		if ptrOffset > 0 {
-			if output != nil {
-				output!(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), snd_buf.back?.value!.associatedInstances)
-			} else {
-				// log a warning or something?
-			}
+			output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), snd_buf.back?.value!.associatedInstances)
 		}
 		
 		if change == true {
@@ -957,7 +930,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 	}
 	
-	public mutating func update(current:UInt32) {
+	public mutating func update(current:UInt32, _ output:OutputHandler) {
 		self.current = current
 		if updated == 0 {
 			updated = 1
@@ -973,7 +946,7 @@ public struct ikcp_cb<assosiated_type> {
 		if itimeDiff(later:current, earlier:ts_flush) >= 0 {
 			ts_flush = current &+ interval
 		}
-		flush()
+		flush(output)
 	}
 	
 	public mutating func check(current:UInt32) -> UInt32 {

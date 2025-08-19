@@ -1,29 +1,25 @@
 import Testing
 @testable import kcp_swift
+import Foundation
+
 
 @Suite(.serialized)
 final class kcp_core_tests {
 	var kcp:ikcp_cb<Void>!
     var capturedPackets: [[UInt8]] = []   // what the output handler sees
 	init() {
-		// The output handler simply stores the raw bytes that would have been
-		// sent on the UDP socket – this lets us inspect `flush()` later.
 		let outHandler: ikcp_cb<Void>.OutputHandler = { [weak self] buffer, _ in
 			guard let self = self else { return }
-			// `buffer` is a mutable view over the packet that `flush`
-			// generated.  Copy it so the test can keep it after the closure
-			// returns.
 			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
 			self.capturedPackets.append(bytes)
 		}
 		
-		kcp = ikcp_cb<Void>(conv:0x11223344, output: outHandler)
+		kcp = ikcp_cb<Void>(conv:0x11223344)
 		
-		// Reasonable defaults – the same values used in the send‑tests.
 		kcp.mtu = 1500
 		kcp.mss = 1000
 		kcp.stream = false
-		kcp.nodelay = 0                // normal mode
+		kcp.nodelay = 0
 		kcp.interval = 100             // 100 ms flush interval
 		kcp.probe = 0
 		kcp.rmt_wnd = IKCP_WND_RCV
@@ -32,38 +28,19 @@ final class kcp_core_tests {
 		kcp.cwnd = 1
 		kcp.ssthresh = UInt32.max
 	}
-	
-	// -----------------------------------------------------------------
-    // MARK: - Helper: create a dummy segment in snd_buf
-    // -----------------------------------------------------------------
     private func insertDummySentSegment(sn: UInt32) {
 		let seg = ikcp_cb<Void>.ikcp_segment(payloadLength: 0)
         seg.sn = sn
         kcp.snd_buf.add(seg)
         kcp.nsnd_buf &+= 1
     }
-
-   
- // -----------------------------------------------------------------
-    // MARK: - 1️⃣  ACK handling
-    // -----------------------------------------------------------------
-    @Test
-    func inputAckUpdatesRTTAndCwnd() throws {
-        // -------------------------------------------------------------
-        // 1️⃣  Prepare the internal state – two packets have already
-        //     been transmitted (sn = 0 and sn = 1).
-        // -------------------------------------------------------------
+    @Test func inputAckUpdatesRTTAndCwnd() throws {
         kcp.snd_nxt = 2               // next SN we would use
         kcp.snd_una = 0               // earliest un‑acked
 
         insertDummySentSegment(sn: 0)
         insertDummySentSegment(sn: 1)
 
-        // -------------------------------------------------------------
-        // 2️⃣  Build an ACK packet that acknowledges **both** segments.
-        //     The C implementation treats the `una` field as “next SN the
-        //     sender expects”, therefore we set it to 2.
-        // -------------------------------------------------------------
         let now: UInt32 = 123_456               // current time (ms)
         kcp.current = now + 10
         let ack  = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
@@ -86,10 +63,6 @@ final class kcp_core_tests {
         // Feed the packet to the KCP instance.
         try kcp.input(buffer, count:Int(IKCP_OVERHEAD))
 
-        // -----------------------------------------------------------
-        // Verify side‑effects
-        // -----------------------------------------------------------
-        // snd_una must have advanced to the next un‑acked SN (2)
         #expect(kcp.snd_una == 2)
 
         // The RTT estimator must have been updated – we only know that it is
@@ -288,12 +261,18 @@ final class kcp_core_tests {
 
 		kcp.probe = IKCP_ASK_TELL
 		kcp.ackPush(sn: 0, ts: kcp.current)
-		kcp.update(current: kcp.current)
+		kcp.update(current: kcp.current) { buffer, _ in
+			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
+			self.capturedPackets.append(bytes)
+		}
 	
 		#expect(self.capturedPackets.isEmpty == false, "first update must call flush() and produce a packet")
 		let firstFlush = kcp.ts_flush
 		kcp.current &+= 20
-		kcp.update(current: kcp.current)
+		kcp.update(current: kcp.current) { buffer, _ in
+			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
+			self.capturedPackets.append(bytes)
+		}
 	
 		#expect(kcp.ts_flush == firstFlush, "ts_flush must stay unchanged when the interval has not elapsed")
 		#expect(self.capturedPackets.count == 1, "still only the first packet should have been emitted")
@@ -301,7 +280,10 @@ final class kcp_core_tests {
 		kcp.current &+= 40
 		kcp.probe = IKCP_ASK_TELL
 		kcp.ackPush(sn:1, ts: kcp.current)
-		kcp.update(current: kcp.current)
+		kcp.update(current: kcp.current) { buffer, _ in
+			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
+			self.capturedPackets.append(bytes)
+		}
 	
 		#expect(kcp.ts_flush > firstFlush, "second flush must have advanced ts_flush")
 		#expect(self.capturedPackets.count == 2, "two flushes should be recorded")
@@ -312,7 +294,7 @@ final class kcp_core_tests {
 struct kcp_send_tests {
     var kcp: ikcp_cb<Void>
     init() {
-        kcp = ikcp_cb<Void>(conv: 0x11223344, output: nil)
+        kcp = ikcp_cb<Void>(conv: 0x11223344)
         kcp.mtu = 1500
         kcp.mss = 1000
         kcp.stream = false
@@ -376,76 +358,75 @@ struct kcp_send_tests {
 			#expect(kcp.snd_queue.isEmpty)
 		}
     }
-}
-
-import Foundation
-@Test func testSendAndReceiveMultipleLargeSegments() throws {
-	let conv: UInt32 = 0x1234
 	
-	var receiver: ikcp_cb<Void>! = nil
-	var sender: ikcp_cb<Void>! = nil
-
-	receiver = ikcp_cb<Void>(conv: conv, output: { buffer, _  in
-		do {
-			if let baseAddress = buffer.baseAddress {
-				let _ = try sender.input(baseAddress, count: buffer.count)
-			}
-		} catch let error {
-			print(error)
-		}
-	})
-
-	sender = ikcp_cb<Void>(conv: conv, output: { buffer, _ in
-		do {
-			if let baseAddress = buffer.baseAddress {
-				let _ = try receiver.input(baseAddress, count: buffer.count)
-			}
-		} catch let error {
-			print(error)
-		}
-	})
-	sender.nocwnd = 1
-	receiver.nocwnd = 1
-
-	let payload1 = [UInt8](repeating: 1, count: 3000)
-	let payload2 = [UInt8](repeating: 2, count: 300000)
-	let payload3 = [UInt8](repeating: 3, count: 300000)
-	let payload4 = [UInt8](repeating: 4, count: 300000)
-	
-	var tempPayload = payload1
-	let _ = try sender.send(&tempPayload, count: 3000)
-	tempPayload = payload2
-	let _ = try sender.send(&tempPayload, count: 300000)
-	tempPayload = payload3
-	let _ = try sender.send(&tempPayload, count: 300000)
-	tempPayload = payload4
-	let _ = try sender.send(&tempPayload, count: 300000)
-	
-	var now = UInt32(0)          // “current” time (ms)
-
-	var received: [[UInt8]] = []
-	repeat {
-		sender.update(current: now)
-		receiver.update(current: now)
-
-		do {
-			let tempReceived = try receiver.receive()
-			received.append(tempReceived)
-		} catch {
-			
-		}
-
-		now += 10_000        // advance 10 ms per iteration – tweak as needed
+	@Test func testSendAndReceiveMultipleLargeSegments() throws {
+		let conv: UInt32 = 0x1234
 		
-		Thread.sleep(forTimeInterval: 0.01)
-
-		// Break if nothing left to send and nothing left to receive.
-		if received.count == 4 { break }
-	} while true
+		var receiver: ikcp_cb<Void>! = nil
+		var sender: ikcp_cb<Void>! = nil
 	
-	#expect(received.count == 4)
-	#expect(received[0] == payload1)
-	#expect(received[1] == payload2)
-	#expect(received[2] == payload3)
-	#expect(received[3] == payload4)
+		receiver = ikcp_cb<Void>(conv: conv)
+	
+		sender = ikcp_cb<Void>(conv: conv)
+		sender.nocwnd = 1
+		receiver.nocwnd = 1
+	
+		let payload1 = [UInt8](repeating: 1, count: 3000)
+		let payload2 = [UInt8](repeating: 2, count: 300000)
+		let payload3 = [UInt8](repeating: 3, count: 300000)
+		let payload4 = [UInt8](repeating: 4, count: 300000)
+		
+		var tempPayload = payload1
+		let _ = try sender.send(&tempPayload, count: 3000)
+		tempPayload = payload2
+		let _ = try sender.send(&tempPayload, count: 300000)
+		tempPayload = payload3
+		let _ = try sender.send(&tempPayload, count: 300000)
+		tempPayload = payload4
+		let _ = try sender.send(&tempPayload, count: 300000)
+		
+		var now = UInt32(0)          // “current” time (ms)
+	
+		var received: [[UInt8]] = []
+		repeat {
+			sender.update(current:now) { buffer, _ in
+				do {
+					if let baseAddress = buffer.baseAddress {
+						let _ = try receiver.input(baseAddress, count: buffer.count)
+					}
+				} catch let error {
+					print(error)
+				}
+			}
+			receiver.update(current:now) { buffer, _  in
+				do {
+					if let baseAddress = buffer.baseAddress {
+						let _ = try sender.input(baseAddress, count: buffer.count)
+					}
+				} catch let error {
+					print(error)
+				}
+			}
+	
+			do {
+				let tempReceived = try receiver.receive()
+				received.append(tempReceived)
+			} catch {
+				
+			}
+	
+			now += 10_000        // advance 10 ms per iteration – tweak as needed
+			
+			Thread.sleep(forTimeInterval: 0.01)
+	
+			// Break if nothing left to send and nothing left to receive.
+			if received.count == 4 { break }
+		} while true
+		
+		#expect(received.count == 4)
+		#expect(received[0] == payload1)
+		#expect(received[1] == payload2)
+		#expect(received[2] == payload3)
+		#expect(received[3] == payload4)
+	}
 }
