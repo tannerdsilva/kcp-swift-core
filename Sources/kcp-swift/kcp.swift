@@ -1,3 +1,9 @@
+import func Foundation.clock
+import var Foundation.CLOCKS_PER_SEC
+
+public func iclock() -> UInt32 {
+	return UInt32(clock() / (CLOCKS_PER_SEC / 1000))
+}
 fileprivate func decodeUInt32(_ ptr:inout UnsafeRawPointer) -> UInt32 {
 	defer {
 		ptr += MemoryLayout<UInt32>.size
