@@ -371,11 +371,8 @@ public struct ikcp_cb<assosiated_type> {
 		}
 		return copied
 	}
-
-	//---------------------------------------------------------------------
-	// peek data size
-	//---------------------------------------------------------------------
-	/// Returns the size of the next segment in `rcv_queue`
+	
+	@available(*, noasync)
 	internal mutating func peekSize() throws(ReceiveError) -> Int {
 		guard rcv_queue.isEmpty == false else {
 			throw ReceiveError.receiveQueueEmpty
@@ -400,6 +397,7 @@ public struct ikcp_cb<assosiated_type> {
 		return total
 	}
 	
+	@available(*, noasync)
 	public mutating func send(_ inputPtr:UnsafePointer<UInt8>?, count len:Int, assosiatedData: assosiated_type? = nil) throws(SendError) -> Int {
 		guard mss > 0 else {
 			throw SendError.mssValueError
@@ -480,10 +478,7 @@ public struct ikcp_cb<assosiated_type> {
 		return sent
 	}
 
-	//---------------------------------------------------------------------
-	// parse ack
-	//---------------------------------------------------------------------
-	/// Updates the RTT estimators and recalculates the Retransmission Timeout (RTO)
+	@available(*, noasync)
 	internal mutating func updateAck(rtt: Int32) {
 		if rx_srtt == 0 {
 			rx_srtt = rtt
@@ -531,7 +526,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 	}
 	
-	/// Acknowledges all fragments with a `sn < una`
+	@available(*, noasync)
 	internal mutating func parseUna(una: UInt32) {
 		segLoop: for (curNode, seg) in snd_buf.makeIterator() {
 			if itimeDiff(later:una, earlier:seg.sn) > 0 {
@@ -543,7 +538,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 	}
 	
-	/// Counts how many times a later packet was acknowledged while this segment wasn't
+	@available(*, noasync)
 	internal mutating func parseFastAck(sn: UInt32, ts: UInt32) {
 		guard itimeDiff(later:sn, earlier:snd_una) >= 0 && itimeDiff(later:sn, earlier:snd_nxt) < 0 else {
 			return
@@ -564,10 +559,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 	}
 	
-	//---------------------------------------------------------------------
-	// ack append
-	//---------------------------------------------------------------------
-	/// Pushes an ACK onto the KCP's ACK list
+	@available(*, noasync)
 	internal mutating func ackPush(sn: UInt32, ts: UInt32) {
 		let newSize = ackcount + 1
 		if newSize > ackblock {
@@ -593,6 +585,7 @@ public struct ikcp_cb<assosiated_type> {
 		ackcount &+= 1
 	}
 	
+	@available(*, noasync)
 	internal func ackGet(p:Int, sn: inout UInt32, ts: inout UInt32) {
 		guard p >= 0 && UInt32(p) < ackcount else {
 			fatalError("invalid p index passed to ackGet")
@@ -602,10 +595,7 @@ public struct ikcp_cb<assosiated_type> {
 		ts = acklist[base + 1]
 	}
 	
-	//---------------------------------------------------------------------
-	// parse data
-	//---------------------------------------------------------------------
-	/// Called every time data is received. Removes out-of-window or duplicate segments, insert new segments into `rec_buf`, and moves in order segments to `rec_queue`
+	@available(*, noasync)
 	internal mutating func parseData(_ newseg: ikcp_segment) {
 		let sn = newseg.sn
 		var isDuplicate = false
@@ -640,7 +630,8 @@ public struct ikcp_cb<assosiated_type> {
 			rcv_nxt &+= 1
 		}
 	}
-
+	
+	@available(*, noasync)
 	public mutating func input(_ inputPtr:UnsafePointer<UInt8>, count:Int) throws(InputError) {
 		let prevUna = snd_una
 		var maxAck:UInt32 = 0
@@ -749,10 +740,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 	}
 	
-	//---------------------------------------------------------------------
-	// ikcp_encode_seg
-	//---------------------------------------------------------------------
-	/// Encodes a KCP segment into an array of bytes	
+	@available(*, noasync)
 	internal func wndUnused() -> UInt16 {
 		if (nrcv_que < rcv_wnd) {
 			return UInt16(rcv_wnd - nrcv_que)
@@ -760,6 +748,7 @@ public struct ikcp_cb<assosiated_type> {
 		return 0
 	}
 	
+	@available(*, noasync)
 	internal mutating func flush(_ output:OutputHandler) { 
 		guard updated != 0 else {
 			return
@@ -930,6 +919,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 	}
 	
+	@available(*, noasync)
 	public mutating func update(current:UInt32, _ output:OutputHandler) {
 		self.current = current
 		if updated == 0 {
@@ -949,6 +939,7 @@ public struct ikcp_cb<assosiated_type> {
 		flush(output)
 	}
 	
+	@available(*, noasync)
 	public mutating func check(current:UInt32) -> UInt32 {
 		guard updated != 0 else {
 			return current
@@ -978,7 +969,7 @@ public struct ikcp_cb<assosiated_type> {
 		return current &+ minimal
 	}
 	
-	
+	@available(*, noasync)
 	public mutating func setMTU(_ mtu:Int) throws(InvalidMTUError) {
 		if mtu > 0 {
 			buffer.deallocate()
@@ -993,6 +984,7 @@ public struct ikcp_cb<assosiated_type> {
 		self.buffer = newBuf
 	}
 	
+	@available(*, noasync)
 	@discardableResult public mutating func setInterval(_ interval: Int) {
 		var iv = interval
 		if iv > 5_000 {
@@ -1003,6 +995,7 @@ public struct ikcp_cb<assosiated_type> {
 		self.interval = UInt32(iv)
 	}
 	
+	@available(*, noasync)
     @discardableResult public mutating func setNoDelay(_ nodelay:Int, interval:Int, resend:Int, nc:Int) -> Int {
         // nodelay flag
         if nodelay >= 0 {
@@ -1033,10 +1026,8 @@ public struct ikcp_cb<assosiated_type> {
 
         return 0
     }
-    
-    // ------------------------------------------------------------
-    // MARK: – Number of pending sends (ikcp_waitsnd)
-    // ------------------------------------------------------------
+
+	@available(*, noasync)    
     func waitSnd() -> Int {
         // The C version returns an int, so we keep the same type.
         return Int(self.nsnd_buf + self.nsnd_que)
