@@ -118,7 +118,7 @@ public struct InvalidMTUError:Swift.Error {}
 
 /// KCP control block. Main structrue that represents a KCP session.
 public struct ikcp_cb<assosiated_type> {
-	internal final class ikcp_segment {
+	public final class ikcp_segment {
 		internal var conv:UInt32 = 0 		// Conversation ID
 		internal var cmd:UInt8 = 0			// Command type (type of segment). 81: PUSH(data), 82: ACK, 83: WASK(window probe request), 84: WINS(window size response)
 		internal var frg:UInt8 = 0			// Fragment index, First Fragment: n-1, Last Fragment: 0
@@ -170,74 +170,79 @@ public struct ikcp_cb<assosiated_type> {
 	}
 	
 	/// conversation id
-	internal var conv:UInt32
+	public var conv:UInt32
 	/// maximum transmission unit: the largest udp packet accepted
-	internal var mtu:UInt32
+	public var mtu:UInt32
 	/// maximum segment size: largest amount of data per segment
-	internal var mss:UInt32
+	public var mss:UInt32
 	/// connection state: 0 = normal, -1 = dead
-	internal var state:UInt32
+	public var state:UInt32
 	
 	/// earliest unacknowledged segment
-	internal var snd_una:UInt32
+	public var snd_una:UInt32
 	/// next segment number to send
-	internal var snd_nxt:UInt32
+	public var snd_nxt:UInt32
 	/// next expected segment number from peer
-	internal var rcv_nxt:UInt32
+	public var rcv_nxt:UInt32
 
 	/// timestamp of the most recent packet received (used for RTT calculation)
-	internal var ts_recent:UInt32	// Timestamp of the most recent packet received (used for RTT)
-	internal var ts_lastack:UInt32	// Timestamp of the last ACK sent
-	internal var ssthresh:UInt32	// Slow start theshold
+	public var ts_recent:UInt32	// Timestamp of the most recent packet received (used for RTT)
+	public var ts_lastack:UInt32	// Timestamp of the last ACK sent
+	public var ssthresh:UInt32	// Slow start theshold
 
-	internal var rx_rttval:Int32	// Smoothed RTT Variance
-	internal var rx_srtt:Int32		// Smoothed RTT
-	internal var rx_rto:Int32		// Retransmission timeout (dynamically calculated)
-	internal var rx_minrto:Int32	// Minimum RTO allowed
+	public var rx_rttval:Int32	// Smoothed RTT Variance
+	public var rx_srtt:Int32		// Smoothed RTT
+	public var rx_rto:Int32 {
+		didSet {
+			print("rx rto changed: \(rx_rto)")
+		}
+	}
+	// Retransmission timeout (dynamically calculated)
+	public var rx_minrto:Int32	// Minimum RTO allowed
 
-	internal var snd_wnd:UInt32		// Sender's Window: How many unacked segments willing to send
-	internal var rcv_wnd:UInt32		// Receivers Window: How many segments we can accept
-	internal var rmt_wnd:UInt32		// Remote's advertised receive window
-	internal var cwnd:UInt32		// Congestion Window
-	internal var probe:UInt32		// Flags for window probing
+	public var snd_wnd:UInt32		// Sender's Window: How many unacked segments willing to send
+	public var rcv_wnd:UInt32		// Receivers Window: How many segments we can accept
+	public var rmt_wnd:UInt32		// Remote's advertised receive window
+	public var cwnd:UInt32		// Congestion Window
+	public var probe:UInt32		// Flags for window probing
 
-	internal var current:UInt32
-	internal var interval:UInt32
-	internal var ts_flush:UInt32
-	internal var xmit:UInt32		// Total number of transmissions
+	public var current:UInt32
+	public var interval:UInt32
+	public var ts_flush:UInt32
+	public var xmit:UInt32		// Total number of transmissions
 
-	internal var nrcv_buf:UInt32	// Number of segments in rcv_buff
-	internal var nsnd_buf:UInt32	// Number of segments in snd_buff
+	public var nrcv_buf:UInt32	// Number of segments in rcv_buff
+	public var nsnd_buf:UInt32	// Number of segments in snd_buff
 
-	internal var nrcv_que:UInt32	// Number of segments in rcv_queue
-	internal var nsnd_que:UInt32	// Number of segments in snd_queue
+	public var nrcv_que:UInt32	// Number of segments in rcv_queue
+	public var nsnd_que:UInt32	// Number of segments in snd_queue
 
-	internal var nodelay:UInt32		// 1 for nodelay mode
-	internal var updated:UInt32		// indicates if ikcp_update() has been called
+	public var nodelay:UInt32		// 1 for nodelay mode
+	public var updated:UInt32		// indicates if ikcp_update() has been called
 
-	internal var ts_probe:UInt32	// Next scheduled probe time
-	internal var probe_wait:UInt32	// Time to wait before probing again
+	public var ts_probe:UInt32	// Next scheduled probe time
+	public var probe_wait:UInt32	// Time to wait before probing again
 
-	internal var dead_link:UInt32	// Max number of retransmits before considering the link dead
-	internal var incr:UInt32
+	public var dead_link:UInt32	// Max number of retransmits before considering the link dead
+	public var incr:UInt32
 
-	internal var snd_queue = LinkedList<ikcp_segment>()		// user data waiting to be segmented and sent out
-	internal var rcv_queue = LinkedList<ikcp_segment>()		// Fully reassembled segments ready to return to application
-	internal var snd_buf = LinkedList<ikcp_segment>()		// Segments sent and waiting to be ACKed
-	internal var rcv_buf = LinkedList<ikcp_segment>()	// Segments received out of oder and waiting to be reassembled
+	public var snd_queue = LinkedList<ikcp_segment>()		// user data waiting to be segmented and sent out
+	public var rcv_queue = LinkedList<ikcp_segment>()		// Fully reassembled segments ready to return to application
+	public var snd_buf = LinkedList<ikcp_segment>()		// Segments sent and waiting to be ACKed
+	public var rcv_buf = LinkedList<ikcp_segment>()	// Segments received out of oder and waiting to be reassembled
 	
 	/// acklist is nil when ackcount == 0. variable is safe to access any time ackcount > 0
-	internal var acklist:UnsafeMutableBufferPointer<UInt32>!
-	internal var ackcount:UInt32
-	internal var ackblock:UInt32
+	public var acklist:UnsafeMutableBufferPointer<UInt32>!
+	public var ackcount:UInt32
+	public var ackblock:UInt32
 
-	internal var fastresend:Int64
+	public var fastresend:Int64
 	
-	internal var fastlimit:Int64
+	public var fastlimit:Int64
 
-	internal var nocwnd:Int64
+	public var nocwnd:Int64
 	
-	internal var stream:Bool
+	public var stream:Bool
 	
 	/// buffer is nil when mtu == 0. variable is safe to access any time ackcount > 0
 	internal var buffer:UnsafeMutablePointer<UInt8>! = nil
