@@ -32,7 +32,6 @@ final class kcp_core_tests {
 		let seg = ikcp_cb<Void>.ikcp_segment(payloadLength: 0)
         seg.sn = sn
         kcp.snd_buf.add(seg)
-        kcp.nsnd_buf &+= 1
     }
     @Test func inputAckUpdatesRTTAndCwnd() throws {
         kcp.snd_nxt = 2               // next SN we would use
@@ -225,7 +224,6 @@ final class kcp_core_tests {
             let seg = ikcp_cb<Void>.ikcp_segment(payloadLength: 0)
             seg.sn = UInt32(sn)
             kcp.snd_buf.add(seg)
-            kcp.nsnd_buf &+= 1
         }
         kcp.snd_nxt = 3
         kcp.current = 2_000

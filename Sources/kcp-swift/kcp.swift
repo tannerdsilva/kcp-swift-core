@@ -63,8 +63,8 @@ let IKCP_CMD_WASK:UInt8 = 83
 let IKCP_CMD_WINS:UInt8 = 84
 let IKCP_ASK_SEND:UInt32 = 1
 let IKCP_ASK_TELL:UInt32 = 2
-let IKCP_WND_SND:UInt32 = 32
-let IKCP_WND_RCV:UInt32 = 256
+let IKCP_WND_SND:UInt32 = 4096
+let IKCP_WND_RCV:UInt32 = 4096
 let IKCP_MTU_DEF:UInt32 = 1400
 let IKCP_ACK_FAST:UInt32 = 3
 let IKCP_INTERVAL:UInt32 = 100
@@ -186,17 +186,13 @@ public struct ikcp_cb<assosiated_type> {
 	public var rcv_nxt:UInt32
 
 	/// timestamp of the most recent packet received (used for RTT calculation)
-	public var ts_recent:UInt32	// Timestamp of the most recent packet received (used for RTT)
+	public var ts_recent:UInt32
 	public var ts_lastack:UInt32	// Timestamp of the last ACK sent
 	public var ssthresh:UInt32	// Slow start theshold
 
 	public var rx_rttval:Int32	// Smoothed RTT Variance
-	public var rx_srtt:Int32		// Smoothed RTT
-	public var rx_rto:Int32 {
-		didSet {
-			print("rx rto changed: \(rx_rto)")
-		}
-	}
+	public var rx_srtt:Int32	// Smoothed RTT
+	public var rx_rto:Int32
 	// Retransmission timeout (dynamically calculated)
 	public var rx_minrto:Int32	// Minimum RTO allowed
 
@@ -211,12 +207,6 @@ public struct ikcp_cb<assosiated_type> {
 	public var ts_flush:UInt32
 	public var xmit:UInt32		// Total number of transmissions
 
-	public var nrcv_buf:UInt32	// Number of segments in rcv_buff
-	public var nsnd_buf:UInt32	// Number of segments in snd_buff
-
-	public var nrcv_que:UInt32	// Number of segments in rcv_queue
-	public var nsnd_que:UInt32	// Number of segments in snd_queue
-
 	public var nodelay:UInt32		// 1 for nodelay mode
 	public var updated:UInt32		// indicates if ikcp_update() has been called
 
@@ -228,11 +218,11 @@ public struct ikcp_cb<assosiated_type> {
 
 	public var snd_queue = LinkedList<ikcp_segment>()		// user data waiting to be segmented and sent out
 	public var rcv_queue = LinkedList<ikcp_segment>()		// Fully reassembled segments ready to return to application
-	public var snd_buf = LinkedList<ikcp_segment>()		// Segments sent and waiting to be ACKed
-	public var rcv_buf = LinkedList<ikcp_segment>()	// Segments received out of oder and waiting to be reassembled
+	public var snd_buf = LinkedList<ikcp_segment>()			// Segments sent and waiting to be ACKed
+	public var rcv_buf = LinkedList<ikcp_segment>()			// Segments received out of oder and waiting to be reassembled
 	
 	/// acklist is nil when ackcount == 0. variable is safe to access any time ackcount > 0
-	public var acklist:UnsafeMutableBufferPointer<UInt32>!
+	private var acklist:UnsafeMutableBufferPointer<UInt32>!
 	public var ackcount:UInt32
 	public var ackblock:UInt32
 
@@ -279,12 +269,6 @@ public struct ikcp_cb<assosiated_type> {
 		self.interval = IKCP_INTERVAL
 		self.ts_flush = IKCP_INTERVAL
 		self.xmit = 0
-
-		self.nrcv_buf = 0
-		self.nsnd_buf = 0
-
-		self.nrcv_que = 0
-		self.nsnd_que = 0
 
 		self.nodelay = 0
 		self.updated = 0
@@ -339,7 +323,7 @@ public struct ikcp_cb<assosiated_type> {
 			throw ReceiveError.lengthTooSmall
 		}
 		var recover:Bool = false
-		if nrcv_que >= rcv_wnd {
+		if rcv_queue.count >= rcv_wnd {
 			recover = true
 		}
 		var copied = 0
@@ -350,7 +334,6 @@ public struct ikcp_cb<assosiated_type> {
 			copied += Int(seg.len)
 			if isPeek == false {
 				rcv_queue.remove(node)
-				nrcv_que &-= 1
 			}
 			guard seg.frg != 0 else {
 				break nodeLoop
@@ -364,12 +347,10 @@ public struct ikcp_cb<assosiated_type> {
 		#endif
 		
 		for (node, seg) in rcv_buf.makeIterator() {
-			if seg.sn == rcv_nxt && nrcv_buf < rcv_wnd {
+			if seg.sn == rcv_nxt && rcv_buf.count < rcv_wnd {
 				rcv_buf.remove(node)
-				nrcv_buf -= 1
 				
 				rcv_queue.addTail(node)
-				nrcv_que += 1
 				
 				rcv_nxt += 1
 			} else {
@@ -377,7 +358,7 @@ public struct ikcp_cb<assosiated_type> {
 			}
 		}
 		
-		if nrcv_que < rcv_wnd && recover == true {
+		if rcv_queue.count < rcv_wnd && recover == true {
 			probe |= IKCP_ASK_TELL
 		}
 		return copied
@@ -395,7 +376,7 @@ public struct ikcp_cb<assosiated_type> {
         if firstSeg.frg == 0 {
         	return Int(firstSeg.len)
         }
-        if nrcv_que < UInt32(firstSeg.frg + 1) {
+        if rcv_queue.count < UInt32(firstSeg.frg + 1) {
         	throw ReceiveError.firstSegmentFragmentError
         }
         var total:Int = 0
@@ -481,7 +462,6 @@ public struct ikcp_cb<assosiated_type> {
 				seg.frg = UInt8(count - i - 1)
 			}
 			snd_queue.addTail(seg)
-			nsnd_que &+= 1
 			
 			remaining -= fragSize
 			sent += fragSize
@@ -528,7 +508,6 @@ public struct ikcp_cb<assosiated_type> {
 		segLoop: for (curNode, seg) in snd_buf.makeIterator() {
 			guard seg.sn != sn else {
 				snd_buf.remove(curNode)
-				nsnd_buf &-= 1
 				break segLoop
 			}
 			guard itimeDiff(later:sn, earlier:seg.sn) >= 0 else {
@@ -542,7 +521,6 @@ public struct ikcp_cb<assosiated_type> {
 		segLoop: for (curNode, seg) in snd_buf.makeIterator() {
 			if itimeDiff(later:una, earlier:seg.sn) > 0 {
 				snd_buf.remove(curNode)
-				nsnd_buf &-= 1
 			} else {
 				break segLoop
 			}
@@ -631,13 +609,10 @@ public struct ikcp_cb<assosiated_type> {
 			} else {
 				rcv_buf.add(newseg)
 			}
-			nrcv_buf &+= 1
 		}
-		while let firstNode = rcv_buf.front, firstNode.value!.sn == rcv_nxt && nrcv_que < rcv_wnd {
+		while let firstNode = rcv_buf.front, firstNode.value!.sn == rcv_nxt && rcv_queue.count < rcv_wnd {
 			rcv_buf.remove(firstNode)
-			nrcv_buf &-= 1
 			rcv_queue.addTail(firstNode)
-			nrcv_que &+= 1
 			rcv_nxt &+= 1
 		}
 	}
@@ -753,8 +728,8 @@ public struct ikcp_cb<assosiated_type> {
 	
 	@available(*, noasync)
 	internal func wndUnused() -> UInt16 {
-		if (nrcv_que < rcv_wnd) {
-			return UInt16(rcv_wnd - nrcv_que)
+		if (rcv_queue.count < rcv_wnd) {
+			return UInt16(rcv_wnd - rcv_queue.count)
 		}
 		return 0
 	}
@@ -835,8 +810,6 @@ public struct ikcp_cb<assosiated_type> {
 			guard let node = snd_queue.front else { break seekLoop }
 			snd_queue.remove(node)
 			snd_buf.addTail(node)
-			nsnd_que -= 1
-			nsnd_buf += 1
 			
 			let newSeg = node.value!
 			newSeg.conv = conv
@@ -1041,6 +1014,6 @@ public struct ikcp_cb<assosiated_type> {
 	@available(*, noasync)    
     func waitSnd() -> Int {
         // The C version returns an int, so we keep the same type.
-        return Int(self.nsnd_buf + self.nsnd_que)
+        return Int(snd_buf.count + snd_queue.count)
     }
 }
