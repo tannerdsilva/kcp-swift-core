@@ -428,3 +428,33 @@ struct kcp_send_tests {
 		#expect(received[3] == payload4)
 	}
 }
+
+@Test func testLinkedListIterator() {
+	let myList = LinkedList<Int>()
+	myList.addTail(1)
+	myList.addTail(2)
+	myList.addTail(3)
+	myList.addTail(4)
+	myList.addTail(5)
+	
+	var it = myList.makeLoopingIterator()
+	#expect(it.current() == nil)
+	it = it.nextIterator()!
+	#expect(it.current()!.0.value == 1)
+	let remove = it
+	it = it.nextIterator()!
+	myList.remove(remove.current()!.0)
+	it = it.nextIterator()!
+	#expect(it.current()!.0.value == 3)
+	it = it.prevIterator()!
+	#expect(it.current()!.0.value == 2)
+	it = it.nextIterator()!
+	it = it.nextIterator()!
+	#expect(it.current()!.0.value == 4)
+	it = it.prevIterator()!
+	it = it.prevIterator()!
+	it = it.prevIterator()!
+	for (_, val) in myList {
+		print(val)
+	}
+}
