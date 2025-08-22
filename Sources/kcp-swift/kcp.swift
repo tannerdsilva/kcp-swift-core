@@ -1016,4 +1016,39 @@ public struct ikcp_cb<assosiated_type> {
         // The C version returns an int, so we keep the same type.
         return Int(snd_buf.count + snd_queue.count)
     }
+	
+	public mutating func updateSend() {
+		let seg = ikcp_segment(payloadLength:0)
+		seg.conv = conv
+		seg.cmd = IKCP_CMD_ACK
+		seg.frg = 0
+		seg.wnd = wndUnused()
+		seg.una = rcv_nxt
+		seg.sn = 0
+		seg.ts = 0
+		
+		var cwnd = min(snd_wnd, rmt_wnd)
+		if nocwnd == 0 {
+			cwnd = min(cwnd, self.cwnd)
+		}
+		
+		seekLoop: while itimeDiff(later:snd_nxt, earlier:snd_una &+ cwnd) < 0 {
+			guard let node = snd_queue.front else { break seekLoop }
+			snd_queue.remove(node)
+			snd_buf.addTail(node)
+			
+			let newSeg = node.value!
+			newSeg.conv = conv
+			newSeg.cmd = IKCP_CMD_PUSH
+			newSeg.wnd = seg.wnd
+			newSeg.ts = current
+			newSeg.sn = snd_nxt
+			snd_nxt &+= 1
+			newSeg.una = rcv_nxt
+			newSeg.resendts = current
+			newSeg.rto = UInt32(rx_rto)
+			newSeg.fastack = 0
+			newSeg.xmit = 0
+		}
+	}
 }

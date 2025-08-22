@@ -382,6 +382,7 @@ struct kcp_send_tests {
 		let _ = try sender.send(&tempPayload, count: 300000)
 		tempPayload = payload4
 		let _ = try sender.send(&tempPayload, count: 300000)
+		sender.updateSend()
 		
 		var now = UInt32(0)          // “current” time (ms)
 	
