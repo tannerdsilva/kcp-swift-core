@@ -195,6 +195,7 @@ public struct ikcp_cb<assosiated_type> {
 	public var rx_rto:Int32
 	// Retransmission timeout (dynamically calculated)
 	public var rx_minrto:Int32	// Minimum RTO allowed
+	public var rx_maxrto:Int32
 
 	public var snd_wnd:UInt32		// Sender's Window: How many unacked segments willing to send
 	public var rcv_wnd:UInt32		// Receivers Window: How many segments we can accept
@@ -258,6 +259,7 @@ public struct ikcp_cb<assosiated_type> {
 		self.rx_srtt = 0
 		self.rx_rto = Int32(IKCP_RTO_DEF)
 		self.rx_minrto = Int32(IKCP_RTO_MIN)
+		self.rx_maxrto = Int32(IKCP_RTO_MAX)
 
 		self.snd_wnd = IKCP_WND_SND
 		self.rcv_wnd = IKCP_WND_RCV
@@ -488,7 +490,7 @@ public struct ikcp_cb<assosiated_type> {
 		
 		// calculate the retransmission time
 		let rtoUnbound:Int32 = Int32(rx_srtt) + Int32(imax(UInt32(interval), UInt32(4 * rx_rttval)))
-		rx_rto = ibound(rx_minrto, rtoUnbound, Int32(IKCP_RTO_MAX))
+		rx_rto = ibound(rx_minrto, rtoUnbound, Int32(rx_maxrto))
 	}
 	
 	/// Syncs `send_una` up to sync with the current contents of the `snd_buf`
