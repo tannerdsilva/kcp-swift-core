@@ -429,7 +429,7 @@ struct kcp_send_tests {
 	}
 }
 
-@Test func testLinkedListIterator() {
+@Test func testLinkedListIteratorNext() {
 	let myList = LinkedList<Int>()
 	myList.addTail(1)
 	myList.addTail(2)
@@ -437,24 +437,61 @@ struct kcp_send_tests {
 	myList.addTail(4)
 	myList.addTail(5)
 	
+	// Make sure the iterator is on the head
 	var it = myList.makeLoopingIterator()
 	#expect(it.current() == nil)
+	
+	// Move iterator and check if it moves to the next node
 	it = it.nextIterator()!
 	#expect(it.current()!.0.value == 1)
+	
+	// Removing a value
 	let remove = it
 	it = it.nextIterator()!
 	myList.remove(remove.current()!.0)
+	#expect(myList.count == 4)
+	#expect(it.current()!.0.value == 2)
+	
+	// Moving iterator and checking value
 	it = it.nextIterator()!
 	#expect(it.current()!.0.value == 3)
+}
+
+@Test func testLinkedListIteratorPrev() {
+	let myList = LinkedList<Int>()
+	myList.add(1)
+	myList.add(2)
+	myList.add(3)
+	myList.add(4)
+	myList.add(5)
+	
+	// Make sure the iterator is on the head
+	var it = myList.makeLoopingIterator()
+	#expect(it.current() == nil)
+	
+	// Move iterator and check if it moves to the next node
 	it = it.prevIterator()!
+	#expect(it.current()!.0.value == 1)
+	
+	// Removing a value
+	let remove = it
+	it = it.prevIterator()!
+	myList.remove(remove.current()!.0)
+	#expect(myList.count == 4)
 	#expect(it.current()!.0.value == 2)
+	
+	// Moving iterator and checking value
+	it = it.prevIterator()!
+	#expect(it.current()!.0.value == 3)
+}
+
+@Test func testEmptyLinkedListIterator() {
+	let myList = LinkedList<Int>()
+	var it = myList.makeLoopingIterator()
+	
+	#expect(it.current() == nil)
 	it = it.nextIterator()!
-	it = it.nextIterator()!
-	#expect(it.current()!.0.value == 4)
+	#expect(it.current() == nil)
 	it = it.prevIterator()!
-	it = it.prevIterator()!
-	it = it.prevIterator()!
-	for (_, val) in myList {
-		print(val)
-	}
+	#expect(it.current() == nil)
 }
