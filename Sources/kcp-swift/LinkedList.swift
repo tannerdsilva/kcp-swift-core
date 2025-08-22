@@ -192,7 +192,7 @@ extension LinkedList.Iterator {
 	///
 	/// - Returns: a new iterator positioned after the current
 	///            element, or `nil` when there is no next node.
-	func nextIterator() -> LinkedList.Iterator? {
+	public func nextIterator() -> LinkedList.Iterator? {
 		// If this iterator has no element to return, we're at the end.
 		let current = self.nextNode
 		guard current!.next !== nil else {
