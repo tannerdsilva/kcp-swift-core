@@ -193,7 +193,6 @@ public struct ikcp_cb<assosiated_type> {
 	
 	public var incr:UInt32
 
-	public var snd_queue = LinkedList<ikcp_segment>()		// user data waiting to be segmented and sent out
 	public var rcv_queue = LinkedList<ikcp_segment>()		// Fully reassembled segments ready to return to application
 	public var snd_buf = LinkedList<ikcp_segment>()			// Segments sent and waiting to be ACKed
 	public var rcv_buf = LinkedList<ikcp_segment>()			// Segments received out of oder and waiting to be reassembled
@@ -365,6 +364,20 @@ public struct ikcp_cb<assosiated_type> {
 			count = 1
 		}
 		
+		// Check if the segments 'fit' in the send buffer
+		if(count + Int(snd_buf.count) > snd_wnd) {
+			return 0
+		}
+		
+		let seg = ikcp_segment(payloadLength:0)
+		seg.conv = conv
+		seg.cmd = IKCP_CMD_ACK
+		seg.frg = 0
+		seg.wnd = 0
+		seg.una = rcv_nxt
+		seg.sn = 0
+		seg.ts = 0
+		
 		for i in 0..<count {
 			let fragSize = min(remaining, Int(mss))
 			var seg:ikcp_segment
@@ -379,8 +392,19 @@ public struct ikcp_cb<assosiated_type> {
 			}
 			
 			seg.frg = UInt8(count - i - 1)
+			seg.conv = conv
+			seg.cmd = IKCP_CMD_PUSH
+			seg.wnd = 0
+			seg.ts = current
+			seg.sn = snd_nxt
+			snd_nxt &+= 1
+			seg.una = rcv_nxt
+			seg.resendts = current
+			seg.rto = UInt32(rx_rto)
+			seg.fastack = 0
+			seg.xmit = 0
 			
-			snd_queue.addTail(seg)
+			snd_buf.addTail(seg)
 			
 			remaining -= fragSize
 			sent += fragSize
@@ -645,29 +669,8 @@ public struct ikcp_cb<assosiated_type> {
 		}
 		ackcount = 0
 		
-		seekLoop: while itimeDiff(later:snd_nxt, earlier:snd_una &+ snd_wnd) < 0 {
-			guard let node = snd_queue.front else { break seekLoop }
-			snd_queue.remove(node)
-			snd_buf.addTail(node)
-			
-			let newSeg = node.value!
-			newSeg.conv = conv
-			newSeg.cmd = IKCP_CMD_PUSH
-			newSeg.wnd = seg.wnd
-			newSeg.ts = current
-			newSeg.sn = snd_nxt
-			snd_nxt &+= 1
-			newSeg.una = rcv_nxt
-			newSeg.resendts = current
-			newSeg.rto = UInt32(rx_rto)
-			newSeg.fastack = 0
-			newSeg.xmit = 0
-		}
-		
 		let rtomin:UInt32 = nodelay == 0 ? UInt32(rx_rto) >> 3 : 0
-		
-		var change = false
-		
+				
 		for (node, seg) in snd_buf.makeIterator() {
 			var needsend = false
 			if seg.xmit == 0 {
@@ -744,42 +747,6 @@ public struct ikcp_cb<assosiated_type> {
 		
         return 0
     }
-
-	@available(*, noasync)    
-    func waitSnd() -> Int {
-        // The C version returns an int, so we keep the same type.
-        return Int(snd_buf.count + snd_queue.count)
-    }
-	
-	public mutating func updateSend() {
-		let seg = ikcp_segment(payloadLength:0)
-		seg.conv = conv
-		seg.cmd = IKCP_CMD_ACK
-		seg.frg = 0
-		seg.wnd = 0
-		seg.una = rcv_nxt
-		seg.sn = 0
-		seg.ts = 0
-		
-		seekLoop: while itimeDiff(later:snd_nxt, earlier:snd_una &+ snd_wnd) < 0 {
-			guard let node = snd_queue.front else { break seekLoop }
-			snd_queue.remove(node)
-			snd_buf.addTail(node)
-			
-			let newSeg = node.value!
-			newSeg.conv = conv
-			newSeg.cmd = IKCP_CMD_PUSH
-			newSeg.wnd = seg.wnd
-			newSeg.ts = current
-			newSeg.sn = snd_nxt
-			snd_nxt &+= 1
-			newSeg.una = rcv_nxt
-			newSeg.resendts = current
-			newSeg.rto = UInt32(rx_rto)
-			newSeg.fastack = 0
-			newSeg.xmit = 0
-		}
-	}
 	
 	/// (Synchronous function) Returns true if all send data has been acknowledged. 
 	public func ackUpToDate() -> Bool {

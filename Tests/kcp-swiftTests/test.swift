@@ -203,8 +203,8 @@ struct kcp_send_tests {
         var payload = [UInt8](repeating: 0xAB, count: 500)
         let sent = try kcp.send(&payload, count:payload.count)
         #expect(sent == payload.count)
-        #expect(kcp.snd_queue.count == 1)
-        let seg = kcp.snd_queue.front!.value!
+        #expect(kcp.snd_buf.count == 1)
+        let seg = kcp.snd_buf.front!.value!
         #expect(seg.len == UInt32(payload.count))
         #expect(seg.frg == 0)
         for i in 0..<payload.count {
@@ -217,10 +217,10 @@ struct kcp_send_tests {
 		var payload = (0..<total).map { UInt8($0 & 0xFF) }
 		let sent = try kcp.send(&payload, count:total)
 		#expect(sent == total)
-		#expect(kcp.snd_queue.count == 3)
+		#expect(kcp.snd_buf.count == 3)
 		var expectedSize = total
 		var expectedFrg: UInt8 = 2
-		for (cur, seg) in kcp.snd_queue.makeIterator() {
+		for (cur, seg) in kcp.snd_buf.makeIterator() {
 			let thisSize = min(expectedSize, Int(kcp.mss))
 			#expect(seg.len == UInt32(thisSize))
 			#expect(seg.frg == expectedFrg)
@@ -253,7 +253,6 @@ struct kcp_send_tests {
 		let _ = try sender.send(&tempPayload, count: 300000)
 		tempPayload = payload4
 		let _ = try sender.send(&tempPayload, count: 300000)
-		sender.updateSend()
 		
 		var now = UInt32(0)          // “current” time (ms)
 	
