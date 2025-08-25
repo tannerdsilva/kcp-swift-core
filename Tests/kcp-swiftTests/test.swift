@@ -18,14 +18,8 @@ final class kcp_core_tests {
 		
 		kcp.mtu = 1500
 		kcp.mss = 1000
-		kcp.stream = false
 		kcp.nodelay = 0
 		kcp.interval = 100             // 100 ms flush interval
-		kcp.probe = 0
-		kcp.rmt_wnd = IKCP_WND_RCV
-		kcp.snd_wnd = IKCP_WND_RCV
-		kcp.rcv_wnd = IKCP_WND_RCV
-		kcp.cwnd = 1
 		kcp.ssthresh = UInt32.max
 	}
     private func insertDummySentSegment(sn: UInt32) {
@@ -46,7 +40,7 @@ final class kcp_core_tests {
 		ack.conv = kcp.conv
 		ack.cmd = IKCP_CMD_ACK
 		ack.frg = 0
-		ack.wnd = UInt16(kcp.rcv_wnd)
+		ack.wnd = 0
 		ack.ts = now
 		ack.sn = 1
 		ack.una = 2
@@ -67,9 +61,6 @@ final class kcp_core_tests {
         // The RTT estimator must have been updated – we only know that it is
         // non‑zero after the first measurement.
         #expect(kcp.rx_srtt != 0)
-
-        // cwnd should have grown (slow‑start) because cwnd < ssthresh.
-        #expect(kcp.cwnd > 1)
     }
     
 	// -----------------------------------------------------------------
@@ -83,7 +74,7 @@ final class kcp_core_tests {
 		push.conv = kcp.conv
 		push.cmd = IKCP_CMD_PUSH
 		push.frg = 0
-		push.wnd = UInt16(kcp.rcv_wnd)
+		push.wnd = 0
 		push.ts = 111_111
 		push.sn = 5
 		push.una = 0
@@ -129,7 +120,7 @@ final class kcp_core_tests {
 			push.conv = kcp.conv
 			push.cmd = IKCP_CMD_PUSH
 			push.frg = 0
-			push.wnd = UInt16(kcp.rcv_wnd)
+			push.wnd = 0
 			push.ts = 200_000
 			push.sn = sn
 			push.una = 0
@@ -159,60 +150,9 @@ final class kcp_core_tests {
 		#expect(kcp.rcv_nxt == 13)
     }
     
-    @Test
-    func inputWindowProbeSetsProbeFlag() throws {
-		let buffLen = Int(IKCP_OVERHEAD)
-		let encodeBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity:buffLen)
-		defer {
-			encodeBuffer.deallocate()
-		}
-
-		let wask = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
-		wask.conv = kcp.conv
-		wask.cmd = IKCP_CMD_WASK
-		wask.frg = 0
-		wask.wnd = UInt16(kcp.rcv_wnd)
-		wask.ts = 0
-		wask.sn = 0
-		wask.una = 0
-		
-        #expect(ikcp_cb<Void>.ikcp_segment.encode(wask, to:encodeBuffer) == Int(IKCP_OVERHEAD))
-
-        #expect(kcp.probe == 0)
-        try kcp.input(encodeBuffer, count:buffLen)
-        #expect(kcp.probe == IKCP_ASK_TELL)
-    }
-    
-     // -----------------------------------------------------------------
+	// -----------------------------------------------------------------
     // MARK: - 4️⃣  Window‑size response (WINS) handling
     // -----------------------------------------------------------------
-    @Test
-    func inputWindowSizeResponseDoesNotChangeState() throws {
-		let buffLen = Int(IKCP_OVERHEAD)
-		let encodeBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity:buffLen)
-		defer {
-			encodeBuffer.deallocate()
-		}
-		let advertisedWnd: UInt16 = 1_234
-        let wins = ikcp_cb<Void>.ikcp_segment(payloadLength:0)
-        wins.conv = kcp.conv
-        wins.cmd = IKCP_CMD_WINS
-        wins.frg = 0
-        wins.wnd = advertisedWnd
-        wins.ts = 0
-        wins.sn = 0
-        wins.una = 0
-
-        let beforeProbe  = kcp.probe
-        
-        #expect(kcp.rmt_wnd != UInt32(advertisedWnd))
-		#expect(ikcp_cb<Void>.ikcp_segment.encode(wins, to:encodeBuffer) == Int(IKCP_OVERHEAD))
-
-       	try kcp.input(encodeBuffer, count:buffLen)
-
-        #expect(kcp.rmt_wnd == UInt32(advertisedWnd))
-        #expect(kcp.probe == beforeProbe)
-    }
     
 	@Test func fastAckAggregatesHighestSn() throws {
 		let buffLen = Int(IKCP_OVERHEAD) * 2
@@ -232,7 +172,7 @@ final class kcp_core_tests {
 		ack0.conv = kcp.conv
 		ack0.cmd = IKCP_CMD_ACK
 		ack0.frg = 0
-		ack0.wnd = UInt16(kcp.rcv_wnd)
+		ack0.wnd = 0
 		ack0.ts = 1000
 		ack0.sn = 0
 		ack0.una = 1
@@ -241,14 +181,13 @@ final class kcp_core_tests {
 		ack2.conv = kcp.conv
 		ack2.cmd = IKCP_CMD_ACK
 		ack2.frg = 0
-		ack2.wnd = UInt16(kcp.rcv_wnd)
+		ack2.wnd = 0
 		ack2.ts = 1000
 		ack2.sn = 2
 		ack2.una = 3
 		#expect(ikcp_cb<Void>.ikcp_segment.encode(ack2, to:encodeBuffer + Int(IKCP_OVERHEAD)) == Int(IKCP_OVERHEAD))
 		try kcp.input(encodeBuffer, count:Int(IKCP_OVERHEAD) * 2)
 		#expect(kcp.snd_una == 3)
-		#expect(kcp.cwnd > 1)
 		#expect(kcp.rx_srtt != 0)
 	}
 	
@@ -257,7 +196,6 @@ final class kcp_core_tests {
 		kcp.current  = 1_000
 		kcp.ts_flush = 0
 
-		kcp.probe = IKCP_ASK_TELL
 		kcp.ackPush(sn: 0, ts: kcp.current)
 		kcp.update(current: kcp.current) { buffer, _ in
 			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
@@ -276,7 +214,6 @@ final class kcp_core_tests {
 		#expect(self.capturedPackets.count == 1, "still only the first packet should have been emitted")
 	
 		kcp.current &+= 40
-		kcp.probe = IKCP_ASK_TELL
 		kcp.ackPush(sn:1, ts: kcp.current)
 		kcp.update(current: kcp.current) { buffer, _ in
 			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
@@ -295,7 +232,6 @@ struct kcp_send_tests {
         kcp = ikcp_cb<Void>(conv: 0x11223344)
         kcp.mtu = 1500
         kcp.mss = 1000
-        kcp.stream = false
     }
     @Test mutating func sendSinglePacket() throws {
         var payload = [UInt8](repeating: 0xAB, count: 500)
@@ -328,35 +264,6 @@ struct kcp_send_tests {
 		#expect(expectedSize == 0)
 	}
 	
-	@Test mutating func streamModeExtension() throws {
-		kcp.stream = true
-		var first = [UInt8](repeating: 0x01, count: 600)
-		let sent1 = try kcp.send(&first, count:first.count)
-		#expect(kcp.snd_queue.count == 1)
-		var second = [UInt8](repeating: 0x02, count: 300)
-		let sent2 = try kcp.send(&second, count: second.count)
-		#expect(sent2 == 300)
-		#expect(kcp.snd_queue.count == 1)
-		let seg = kcp.snd_queue.front!.value!
-		#expect(seg.len == 900)
-		for i in 0..<600 {
-			#expect(seg.data[i] == 0x01)
-		}
-		for i in 600..<900 {
-			#expect(seg.data[i] == 0x02)
-		}
-	}
-
-    @Test mutating func windowOverflowReturnsMinusTwo() throws {
-        kcp.mss = 1
-        var payload = [UInt8](repeating: 0xFF, count:Int(IKCP_WND_RCV))
-		do {
-			_ = try kcp.send(&payload, count: payload.count)
-		} catch SendError.invalidDataCountForReceiveWindow {
-			#expect(kcp.snd_queue.isEmpty)
-		}
-    }
-	
 	@Test func testSendAndReceiveMultipleLargeSegments() throws {
 		let conv: UInt32 = 0x1234
 		
@@ -366,8 +273,6 @@ struct kcp_send_tests {
 		receiver = ikcp_cb<Void>(conv: conv)
 	
 		sender = ikcp_cb<Void>(conv: conv)
-		sender.nocwnd = 1
-		receiver.nocwnd = 1
 	
 		let payload1 = [UInt8](repeating: 1, count: 3000)
 		let payload2 = [UInt8](repeating: 2, count: 300000)
