@@ -20,7 +20,6 @@ final class kcp_core_tests {
 		kcp.mss = 1000
 		kcp.nodelay = 0
 		kcp.interval = 100             // 100 ms flush interval
-		kcp.ssthresh = UInt32.max
 	}
     private func insertDummySentSegment(sn: UInt32) {
 		let seg = ikcp_cb<Void>.ikcp_segment(payloadLength: 0)
@@ -190,39 +189,6 @@ final class kcp_core_tests {
 		#expect(kcp.snd_una == 3)
 		#expect(kcp.rx_srtt != 0)
 	}
-	
-	@Test func updateTriggersFlushAtInterval() throws {
-		kcp.interval = 50
-		kcp.current  = 1_000
-		kcp.ts_flush = 0
-
-		kcp.ackPush(sn: 0, ts: kcp.current)
-		kcp.update(current: kcp.current) { buffer, _ in
-			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
-			self.capturedPackets.append(bytes)
-		}
-	
-		#expect(self.capturedPackets.isEmpty == false, "first update must call flush() and produce a packet")
-		let firstFlush = kcp.ts_flush
-		kcp.current &+= 20
-		kcp.update(current: kcp.current) { buffer, _ in
-			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
-			self.capturedPackets.append(bytes)
-		}
-	
-		#expect(kcp.ts_flush == firstFlush, "ts_flush must stay unchanged when the interval has not elapsed")
-		#expect(self.capturedPackets.count == 1, "still only the first packet should have been emitted")
-	
-		kcp.current &+= 40
-		kcp.ackPush(sn:1, ts: kcp.current)
-		kcp.update(current: kcp.current) { buffer, _ in
-			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
-			self.capturedPackets.append(bytes)
-		}
-	
-		#expect(kcp.ts_flush > firstFlush, "second flush must have advanced ts_flush")
-		#expect(self.capturedPackets.count == 2, "two flushes should be recorded")
-	}
 }
 
 @Suite(.serialized)
@@ -293,7 +259,7 @@ struct kcp_send_tests {
 	
 		var received: [[UInt8]] = []
 		repeat {
-			sender.update(current:now) { buffer, _ in
+			sender.flush(current:now) { buffer, _ in
 				do {
 					if let baseAddress = buffer.baseAddress {
 						let _ = try receiver.input(baseAddress, count: buffer.count)
@@ -302,7 +268,7 @@ struct kcp_send_tests {
 					print(error)
 				}
 			}
-			receiver.update(current:now) { buffer, _  in
+			receiver.flush(current:now) { buffer, _  in
 				do {
 					if let baseAddress = buffer.baseAddress {
 						let _ = try sender.input(baseAddress, count: buffer.count)

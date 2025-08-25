@@ -53,27 +53,15 @@ fileprivate func encodeUInt8(_ val:UInt8, _ ptr:UnsafeMutablePointer<UInt8>) -> 
     return Int32(bitPattern: a &- b)
 }
 
-let IKCP_RTO_NDL:UInt32 = 30
 let IKCP_RTO_MIN:UInt32 = 100
 let IKCP_RTO_DEF:UInt32 = 200
 let IKCP_RTO_MAX:UInt32 = 60000
 let IKCP_CMD_PUSH:UInt8 = 81
 let IKCP_CMD_ACK:UInt8 = 82
-let IKCP_CMD_WASK:UInt8 = 83
-let IKCP_CMD_WINS:UInt8 = 84
-let IKCP_ASK_SEND:UInt32 = 1
-let IKCP_ASK_TELL:UInt32 = 2
 let IKCP_WND_SND:UInt32 = 4096
 let IKCP_MTU_DEF:UInt32 = 1400
-let IKCP_ACK_FAST:UInt32 = 3
 let IKCP_INTERVAL:UInt32 = 100
 let IKCP_OVERHEAD:UInt32 = 24
-let IKCP_DEADLINK:UInt32 = 20
-let IKCP_THRESH_INIT:UInt32 = 2
-let IKCP_THRESH_MIN:UInt32 = 2
-let IKCP_PROBE_INIT:UInt32 = 7000
-let IKCP_PROBE_LIMIT:UInt32 = 120000
-let IKCP_FASTACK_LIMIT:UInt32 = 5
 
 extension ikcp_cb.ikcp_segment {
 	internal static func encode(_ seg: ikcp_cb.ikcp_segment, to outputPtr:UnsafeMutablePointer<UInt8>) -> Int {
@@ -187,7 +175,6 @@ public struct ikcp_cb<assosiated_type> {
 	/// timestamp of the most recent packet received (used for RTT calculation)
 	public var ts_recent:UInt32
 	public var ts_lastack:UInt32	// Timestamp of the last ACK sent
-	public var ssthresh:UInt32	// Slow start theshold
 
 	public var rx_rttval:Int32	// Smoothed RTT Variance
 	public var rx_srtt:Int32	// Smoothed RTT
@@ -200,13 +187,10 @@ public struct ikcp_cb<assosiated_type> {
 
 	public var current:UInt32
 	public var interval:UInt32
-	public var ts_flush:UInt32
 	public var xmit:UInt32		// Total number of transmissions
 
 	public var nodelay:UInt32		// 1 for nodelay mode
-	public var updated:UInt32		// indicates if ikcp_update() has been called
-
-	public var dead_link:UInt32	// Max number of retransmits before considering the link dead
+	
 	public var incr:UInt32
 
 	public var snd_queue = LinkedList<ikcp_segment>()		// user data waiting to be segmented and sent out
@@ -218,11 +202,7 @@ public struct ikcp_cb<assosiated_type> {
 	private var acklist:UnsafeMutableBufferPointer<UInt32>!
 	public var ackcount:UInt32
 	public var ackblock:UInt32
-
-	public var fastresend:Int64
-	
-	public var fastlimit:Int64
-	
+		
 	/// buffer is nil when mtu == 0. variable is safe to access any time ackcount > 0
 	internal var buffer:UnsafeMutablePointer<UInt8>! = nil
 	
@@ -241,7 +221,6 @@ public struct ikcp_cb<assosiated_type> {
 
 		self.ts_recent = 0
 		self.ts_lastack = 0
-		self.ssthresh = IKCP_THRESH_INIT
 
 		self.rx_rttval = 0
 		self.rx_srtt = 0
@@ -253,21 +232,15 @@ public struct ikcp_cb<assosiated_type> {
 
 		self.current = 0
 		self.interval = IKCP_INTERVAL
-		self.ts_flush = IKCP_INTERVAL
 		self.xmit = 0
 
 		self.nodelay = 0
-		self.updated = 0
 
-		self.dead_link = IKCP_DEADLINK
 		self.incr = 0
 
 		self.acklist = nil
 		self.ackcount = 0
 		self.ackblock = 0
-
-		self.fastresend = 0
-		self.fastlimit = Int64(IKCP_FASTACK_LIMIT)
 	}
 	
 	@available(*, noasync)
@@ -302,8 +275,7 @@ public struct ikcp_cb<assosiated_type> {
 		guard peekSize <= absLen else {
 			throw ReceiveError.lengthTooSmall
 		}
-		var recover:Bool = false
-
+		
 		var copied = 0
 		nodeLoop: for (node, seg) in rcv_queue.makeIterator() {
 			if let buf = ptr, seg.len > 0 {
@@ -479,7 +451,7 @@ public struct ikcp_cb<assosiated_type> {
 		guard itimeDiff(later:sn, earlier:snd_una) >= 0 && itimeDiff(later:sn, earlier:snd_nxt) < 0 else {
 			return
 		}
-		segLoop: for (node, seg) in snd_buf.makeIterator() {
+		segLoop: for (_, seg) in snd_buf.makeIterator() {
 			guard itimeDiff(later:sn, earlier:seg.sn) < 0 else {
 				break segLoop
 			}
@@ -566,7 +538,6 @@ public struct ikcp_cb<assosiated_type> {
 	
 	@available(*, noasync)
 	public mutating func input(_ inputPtr:UnsafePointer<UInt8>, count:Int) throws(InputError) {
-		let prevUna = snd_una
 		var maxAck:UInt32 = 0
 		var latestTS:UInt32 = 0
 		var gotAck = false
@@ -645,17 +616,15 @@ public struct ikcp_cb<assosiated_type> {
 	}
 	
 	@available(*, noasync)
-	internal mutating func flush(_ output:OutputHandler) { 
-		guard updated != 0 else {
-			return
-		}
-		var buffer = UnsafeMutablePointer<UInt8>.allocate(capacity:Int(mtu))
+	public mutating func flush(current:UInt32,_ output:OutputHandler) {
+		self.current = current
+		let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity:Int(mtu))
 		buffer.initialize(repeating:0, count:Int(mtu))
 		defer {
 			buffer.deallocate()
 		}
 		var ptrOffset = 0
-		var seg = ikcp_segment(payloadLength:0)
+		let seg = ikcp_segment(payloadLength:0)
 		seg.conv = conv
 		seg.cmd = IKCP_CMD_ACK
 		seg.frg = 0
@@ -695,11 +664,9 @@ public struct ikcp_cb<assosiated_type> {
 			newSeg.xmit = 0
 		}
 		
-		let resent:UInt32 = fastresend > 0 ? UInt32(fastresend) : UInt32.max
 		let rtomin:UInt32 = nodelay == 0 ? UInt32(rx_rto) >> 3 : 0
 		
 		var change = false
-		var lost = false
 		
 		for (node, seg) in snd_buf.makeIterator() {
 			var needsend = false
@@ -719,16 +686,6 @@ public struct ikcp_cb<assosiated_type> {
 					seg.rto = seg.rto &+ step / 2
 				}
 				seg.resendts = current &+ seg.rto
-                lost = true
-			} else if seg.fastack >= resent {
-				// fast‑retransmit (duplicate ACKs)
-				if Int32(seg.xmit) <= fastlimit || fastlimit <= 0 {
-					needsend = true
-					seg.xmit &+= 1
-					seg.fastack = 0
-					seg.resendts = current &+ seg.rto
-					change = true
-				}
 			}
 			
 			if needsend {
@@ -743,65 +700,12 @@ public struct ikcp_cb<assosiated_type> {
 				}
 				ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
 				
-				if seg.xmit >= dead_link {
-					state = UInt32(bitPattern:Int32(-1))
-				}
 			}
 		}
 		
 		if ptrOffset > 0 {
 			output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), snd_buf.back?.value!.associatedInstances)
 		}
-	}
-	
-	@available(*, noasync)
-	public mutating func update(current:UInt32, _ output:OutputHandler) {
-		self.current = current
-		if updated == 0 {
-			updated = 1
-			ts_flush = current
-		}
-		var slap = itimeDiff(later:current, earlier:ts_flush)
-		if slap >= 10_000 || slap < -10_000 {
-			ts_flush = current
-			slap = 0
-		}
-		guard slap >= 0 else { return }
-		ts_flush &+= interval
-		if itimeDiff(later:current, earlier:ts_flush) >= 0 {
-			ts_flush = current &+ interval
-		}
-		flush(output)
-	}
-	
-	@available(*, noasync)
-	public mutating func check(current:UInt32) -> UInt32 {
-		guard updated != 0 else {
-			return current
-		}
-		var tsFlush = ts_flush
-		if itimeDiff(later:current, earlier:tsFlush) >= 10_000 || itimeDiff(later:current, earlier:tsFlush) < -10_000 {
-			tsFlush = current
-		}
-		guard itimeDiff(later:current, earlier:tsFlush) < 0 else {
-			return current
-		}
-		var tmFlush:Int32 = itimeDiff(later:tsFlush, earlier:current)
-		var tmPacket:Int32 = Int32.max
-		for (_, seg) in snd_buf.makeIterator() {
-			let diff = itimeDiff(later:seg.resendts, earlier:current)
-			guard diff > 0 else {
-				return current
-			}
-			if diff < tmPacket {
-				tmPacket = diff
-			}
-		}
-		var minimal = UInt32(min(tmPacket, tmFlush))
-		if minimal >= interval {
-			minimal = interval
-		}
-		return current &+ minimal
 	}
 	
 	@available(*, noasync)
@@ -820,22 +724,11 @@ public struct ikcp_cb<assosiated_type> {
 	}
 	
 	@available(*, noasync)
-	@discardableResult public mutating func setInterval(_ interval: Int) {
-		var iv = interval
-		if iv > 5_000 {
-			iv = 5_000
-		} else if iv < 10 {
-			iv = 10
-		}
-		self.interval = UInt32(iv)
-	}
-	
-	@available(*, noasync)
-    @discardableResult public mutating func setNoDelay(_ nodelay:Int, interval:Int, resend:Int) -> Int {
+    @discardableResult public mutating func setNoDelay(_ nodelay:Int, interval:Int) -> Int {
         // nodelay flag
         if nodelay >= 0 {
             self.nodelay = UInt32(nodelay)
-            self.rx_minrto = (nodelay != 0) ? Int32(IKCP_RTO_NDL) : Int32(IKCP_RTO_MIN)
+            self.rx_minrto = Int32(IKCP_RTO_MIN)
         }
 
         // interval (same clamping as ikcp_interval)
@@ -847,11 +740,6 @@ public struct ikcp_cb<assosiated_type> {
             	iv = 10
             }
             self.interval = UInt32(iv)
-        }
-
-        // fast resend
-        if resend >= 0 {
-            self.fastresend = Int64(resend)
         }
 		
         return 0
