@@ -713,7 +713,7 @@ public struct ikcp_cb<assosiated_type> {
 	
 	@available(*, noasync)
 	public mutating func setMTU(_ mtu:Int) throws(InvalidMTUError) {
-		if mtu > 0 {
+		if mtu > 0  && buffer != nil {
 			buffer.deallocate()
 		}
 		guard mtu >= 50, mtu >= Int(IKCP_OVERHEAD) else {
