@@ -749,9 +749,7 @@ public struct ikcp_cb<assosiated_type> {
 				output(UnsafeMutableBufferPointer<UInt8>(start:buffer, count:ptrOffset), nil)
 				ptrOffset = 0
 			}
-			var sn:UInt32 = 0
-			var ts:UInt32 = 0
-			ackGet(p:Int(i), sn:&sn, ts:&ts)
+			ackGet(p:Int(i), sn:&seg.sn, ts:&seg.ts)
 			ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
 		}
 		ackcount = 0
@@ -788,6 +786,7 @@ public struct ikcp_cb<assosiated_type> {
 			if ptrOffset + Int(IKCP_OVERHEAD) > Int(mtu) {
 				output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), nil)
 			}
+			ptrOffset = ikcp_segment.encode(seg, to:buffer + ptrOffset)
 		}
 		probe = 0
 		
