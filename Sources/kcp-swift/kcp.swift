@@ -838,7 +838,7 @@ public struct ikcp_cb<assosiated_type> {
 				
 
 				if ptrOffset + need > Int(mtu) {
-					output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), node.prev.value!.associatedInstances)
+					output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), node.prev.value?.associatedInstances)
 					ptrOffset = 0
 				}
 				ptrOffset += ikcp_segment.encode(seg, to:buffer + ptrOffset)
@@ -850,7 +850,7 @@ public struct ikcp_cb<assosiated_type> {
 		}
 		
 		if ptrOffset > 0 {
-			output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), snd_buf.back?.value!.associatedInstances)
+			output(UnsafeMutableBufferPointer(start:buffer, count:ptrOffset), snd_buf.back?.value?.associatedInstances)
 		}
 		
 		if change == true {
