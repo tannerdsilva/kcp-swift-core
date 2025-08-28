@@ -18,7 +18,6 @@ final class kcp_core_tests {
 		
 		kcp.mtu = 1500
 		kcp.mss = 1000
-		kcp.stream = false
 		kcp.nodelay = 0
 		kcp.interval = 100             // 100 ms flush interval
 		kcp.probe = 0
@@ -295,14 +294,13 @@ struct kcp_send_tests {
         kcp = ikcp_cb<Void>(conv: 0x11223344)
         kcp.mtu = 1500
         kcp.mss = 1000
-        kcp.stream = false
     }
     @Test mutating func sendSinglePacket() throws {
         var payload = [UInt8](repeating: 0xAB, count: 500)
         let sent = try kcp.send(&payload, count:payload.count)
         #expect(sent == payload.count)
-        #expect(kcp.snd_queue.count == 1)
-        let seg = kcp.snd_queue.front!.value!
+        #expect(kcp.snd_buf.count == 1)
+        let seg = kcp.snd_buf.front!.value!
         #expect(seg.len == UInt32(payload.count))
         #expect(seg.frg == 0)
         for i in 0..<payload.count {
@@ -315,10 +313,10 @@ struct kcp_send_tests {
 		var payload = (0..<total).map { UInt8($0 & 0xFF) }
 		let sent = try kcp.send(&payload, count:total)
 		#expect(sent == total)
-		#expect(kcp.snd_queue.count == 3)
+		#expect(kcp.snd_buf.count == 3)
 		var expectedSize = total
 		var expectedFrg: UInt8 = 2
-		for (cur, seg) in kcp.snd_queue.makeIterator() {
+		for (cur, seg) in kcp.snd_buf.makeIterator() {
 			let thisSize = min(expectedSize, Int(kcp.mss))
 			#expect(seg.len == UInt32(thisSize))
 			#expect(seg.frg == expectedFrg)
@@ -327,35 +325,6 @@ struct kcp_send_tests {
 		}
 		#expect(expectedSize == 0)
 	}
-	
-	@Test mutating func streamModeExtension() throws {
-		kcp.stream = true
-		var first = [UInt8](repeating: 0x01, count: 600)
-		let sent1 = try kcp.send(&first, count:first.count)
-		#expect(kcp.snd_queue.count == 1)
-		var second = [UInt8](repeating: 0x02, count: 300)
-		let sent2 = try kcp.send(&second, count: second.count)
-		#expect(sent2 == 300)
-		#expect(kcp.snd_queue.count == 1)
-		let seg = kcp.snd_queue.front!.value!
-		#expect(seg.len == 900)
-		for i in 0..<600 {
-			#expect(seg.data[i] == 0x01)
-		}
-		for i in 600..<900 {
-			#expect(seg.data[i] == 0x02)
-		}
-	}
-
-    @Test mutating func windowOverflowReturnsMinusTwo() throws {
-        kcp.mss = 1
-        var payload = [UInt8](repeating: 0xFF, count:Int(IKCP_WND_RCV))
-		do {
-			_ = try kcp.send(&payload, count: payload.count)
-		} catch SendError.invalidDataCountForReceiveWindow {
-			#expect(kcp.snd_queue.isEmpty)
-		}
-    }
 	
 	@Test func testSendAndReceiveMultipleLargeSegments() throws {
 		let conv: UInt32 = 0x1234
@@ -366,8 +335,8 @@ struct kcp_send_tests {
 		receiver = ikcp_cb<Void>(conv: conv)
 	
 		sender = ikcp_cb<Void>(conv: conv)
-		sender.nocwnd = 1
-		receiver.nocwnd = 1
+		sender.nocwnd = 0
+		receiver.nocwnd = 0
 	
 		let payload1 = [UInt8](repeating: 1, count: 3000)
 		let payload2 = [UInt8](repeating: 2, count: 300000)
@@ -382,7 +351,6 @@ struct kcp_send_tests {
 		let _ = try sender.send(&tempPayload, count: 300000)
 		tempPayload = payload4
 		let _ = try sender.send(&tempPayload, count: 300000)
-		sender.updateSend()
 		
 		var now = UInt32(0)          // “current” time (ms)
 	

@@ -232,9 +232,7 @@ public struct ikcp_cb<assosiated_type> {
 	public var fastlimit:Int64
 
 	public var nocwnd:Int64
-	
-	public var stream:Bool
-	
+		
 	/// buffer is nil when mtu == 0. variable is safe to access any time ackcount > 0
 	internal var buffer:UnsafeMutablePointer<UInt8>! = nil
 	
@@ -289,7 +287,6 @@ public struct ikcp_cb<assosiated_type> {
 		self.fastlimit = Int64(IKCP_FASTACK_LIMIT)
 		self.nocwnd = 1
 		
-		self.stream = false
 	}
 	
 	@available(*, noasync)
@@ -402,32 +399,6 @@ public struct ikcp_cb<assosiated_type> {
 		var sent = 0
 		var remaining = len
 		var srcPtr:UnsafePointer<UInt8>? = inputPtr
-		if stream == true {
-			if let tailNode = snd_queue.back {
-				var oldSeg = tailNode.value!
-				if oldSeg.len < mss {
-					let capacity = mss - oldSeg.len
-					let extend = min(UInt32(remaining), capacity)
-					let newSize = oldSeg.len + extend
-					var seg = ikcp_segment(payloadLength:Int(oldSeg.len + extend))
-					seg.data.update(from:oldSeg.data, count:Int(oldSeg.len))
-					let encodedUpTo = (seg.data + Int(oldSeg.len))
-					if let src = srcPtr, extend > 0 {
-						encodedUpTo.update(from:src, count:Int(extend))
-						srcPtr = src + Int(extend)
-					}
-					seg.frg = 0
-					snd_queue.addTail(seg)
-					snd_queue.remove(tailNode)
-					remaining -= Int(extend)
-					sent += Int(extend)
-				}
-			}
-			
-			guard remaining > 0 else {
-				return sent
-			}
-		}
 		
 		var count:Int
 		if remaining <= Int(mss) {
@@ -436,15 +407,23 @@ public struct ikcp_cb<assosiated_type> {
 			count = (remaining + Int(mss) - 1) / Int(mss)
 		}
 		
-		guard UInt32(count) < IKCP_WND_RCV else {
-			guard stream == true && sent > 0 else {
-				throw SendError.invalidDataCountForReceiveWindow
-			}
-			return sent	
-		}
 		if count == 0 {
 			count = 1
 		}
+		
+		// Check if the segments 'fit' in the send buffer
+		if(count + Int(snd_buf.count) > snd_wnd) {
+			return 0
+		}
+		
+		let seg = ikcp_segment(payloadLength:0)
+		seg.conv = conv
+		seg.cmd = IKCP_CMD_ACK
+		seg.frg = 0
+		seg.wnd = 0
+		seg.una = rcv_nxt
+		seg.sn = 0
+		seg.ts = 0
 		
 		for i in 0..<count {
 			let fragSize = min(remaining, Int(mss))
@@ -458,12 +437,21 @@ public struct ikcp_cb<assosiated_type> {
 				seg.data.update(from:src, count:fragSize)
 				srcPtr = src + fragSize
 			}
-			if stream == true {
-				seg.frg = 0
-			} else {
-				seg.frg = UInt8(count - i - 1)
-			}
-			snd_queue.addTail(seg)
+			
+			seg.frg = UInt8(count - i - 1)
+			seg.conv = conv
+			seg.cmd = IKCP_CMD_PUSH
+			seg.wnd = 0
+			seg.ts = current
+			seg.sn = snd_nxt
+			snd_nxt &+= 1
+			seg.una = rcv_nxt
+			seg.resendts = current
+			seg.rto = UInt32(rx_rto)
+			seg.fastack = 0
+			seg.xmit = 0
+			
+			snd_buf.addTail(seg)
 			
 			remaining -= fragSize
 			sent += fragSize
@@ -808,25 +796,6 @@ public struct ikcp_cb<assosiated_type> {
 			cwnd = min(cwnd, self.cwnd)
 		}
 		
-		seekLoop: while itimeDiff(later:snd_nxt, earlier:snd_una &+ cwnd) < 0 {
-			guard let node = snd_queue.front else { break seekLoop }
-			snd_queue.remove(node)
-			snd_buf.addTail(node)
-			
-			let newSeg = node.value!
-			newSeg.conv = conv
-			newSeg.cmd = IKCP_CMD_PUSH
-			newSeg.wnd = seg.wnd
-			newSeg.ts = current
-			newSeg.sn = snd_nxt
-			snd_nxt &+= 1
-			newSeg.una = rcv_nxt
-			newSeg.resendts = current
-			newSeg.rto = UInt32(rx_rto)
-			newSeg.fastack = 0
-			newSeg.xmit = 0
-		}
-		
 		let resent:UInt32 = fastresend > 0 ? UInt32(fastresend) : UInt32.max
 		let rtomin:UInt32 = nodelay == 0 ? UInt32(rx_rto) >> 3 : 0
 		
@@ -889,18 +858,18 @@ public struct ikcp_cb<assosiated_type> {
 			let inflight = snd_nxt &- snd_una
 			ssthresh = inflight / 2
 			if ssthresh < IKCP_THRESH_MIN { ssthresh = IKCP_THRESH_MIN }
-            cwnd = ssthresh &+ resent
-            incr = cwnd &* mss
+			self.cwnd = ssthresh &+ resent
+			incr = self.cwnd &* mss
 		}
 		
 		if lost == true {
 			ssthresh = cwnd / 2
 			if ssthresh < IKCP_THRESH_MIN { ssthresh = IKCP_THRESH_MIN }
-			cwnd = 1
+			self.cwnd = 1
 			incr = mss
 		}
 		if cwnd < 1 {
-			cwnd = 1
+			self.cwnd = 1
 			incr = mss
 		}
 	}
@@ -957,7 +926,7 @@ public struct ikcp_cb<assosiated_type> {
 	
 	@available(*, noasync)
 	public mutating func setMTU(_ mtu:Int) throws(InvalidMTUError) {
-		if mtu > 0 {
+		if mtu > 0  && buffer != nil{
 			buffer.deallocate()
 		}
 		guard mtu >= 50, mtu >= Int(IKCP_OVERHEAD) else {
@@ -971,7 +940,7 @@ public struct ikcp_cb<assosiated_type> {
 	}
 	
 	@available(*, noasync)
-	@discardableResult public mutating func setInterval(_ interval: Int) {
+	public mutating func setInterval(_ interval: Int) {
 		var iv = interval
 		if iv > 5_000 {
 			iv = 5_000
@@ -1018,39 +987,4 @@ public struct ikcp_cb<assosiated_type> {
         // The C version returns an int, so we keep the same type.
         return Int(snd_buf.count + snd_queue.count)
     }
-	
-	public mutating func updateSend() {
-		let seg = ikcp_segment(payloadLength:0)
-		seg.conv = conv
-		seg.cmd = IKCP_CMD_ACK
-		seg.frg = 0
-		seg.wnd = wndUnused()
-		seg.una = rcv_nxt
-		seg.sn = 0
-		seg.ts = 0
-		
-		var cwnd = min(snd_wnd, rmt_wnd)
-		if nocwnd == 0 {
-			cwnd = min(cwnd, self.cwnd)
-		}
-		
-		seekLoop: while itimeDiff(later:snd_nxt, earlier:snd_una &+ cwnd) < 0 {
-			guard let node = snd_queue.front else { break seekLoop }
-			snd_queue.remove(node)
-			snd_buf.addTail(node)
-			
-			let newSeg = node.value!
-			newSeg.conv = conv
-			newSeg.cmd = IKCP_CMD_PUSH
-			newSeg.wnd = seg.wnd
-			newSeg.ts = current
-			newSeg.sn = snd_nxt
-			snd_nxt &+= 1
-			newSeg.una = rcv_nxt
-			newSeg.resendts = current
-			newSeg.rto = UInt32(rx_rto)
-			newSeg.fastack = 0
-			newSeg.xmit = 0
-		}
-	}
 }
