@@ -209,7 +209,6 @@ public struct ikcp_cb<assosiated_type> {
 	public var xmit:UInt32		// Total number of transmissions
 
 	public var nodelay:UInt32		// 1 for nodelay mode
-	public var updated:UInt32		// indicates if ikcp_update() has been called
 
 	public var ts_probe:UInt32	// Next scheduled probe time
 	public var probe_wait:UInt32	// Time to wait before probing again
@@ -271,7 +270,6 @@ public struct ikcp_cb<assosiated_type> {
 		self.xmit = 0
 
 		self.nodelay = 0
-		self.updated = 0
 
 		self.ts_probe = 0
 		self.probe_wait = 0
@@ -725,10 +723,9 @@ public struct ikcp_cb<assosiated_type> {
 	}
 	
 	@available(*, noasync)
-	internal mutating func flush(_ output:OutputHandler) { 
-		guard updated != 0 else {
-			return
-		}
+	public mutating func flush(current:UInt32, _ output:OutputHandler) {
+		self.current = current
+		
 		var buffer = UnsafeMutablePointer<UInt8>.allocate(capacity:Int(mtu))
 		buffer.initialize(repeating:0, count:Int(mtu))
 		defer {
@@ -871,56 +868,6 @@ public struct ikcp_cb<assosiated_type> {
 			self.cwnd = 1
 			incr = mss
 		}
-	}
-	
-	@available(*, noasync)
-	public mutating func update(current:UInt32, _ output:OutputHandler) {
-		self.current = current
-		if updated == 0 {
-			updated = 1
-			ts_flush = current
-		}
-		var slap = itimeDiff(later:current, earlier:ts_flush)
-		if slap >= 10_000 || slap < -10_000 {
-			ts_flush = current
-			slap = 0
-		}
-		guard slap >= 0 else { return }
-		ts_flush &+= interval
-		if itimeDiff(later:current, earlier:ts_flush) >= 0 {
-			ts_flush = current &+ interval
-		}
-		flush(output)
-	}
-	
-	@available(*, noasync)
-	public mutating func check(current:UInt32) -> UInt32 {
-		guard updated != 0 else {
-			return current
-		}
-		var tsFlush = ts_flush
-		if itimeDiff(later:current, earlier:tsFlush) >= 10_000 || itimeDiff(later:current, earlier:tsFlush) < -10_000 {
-			tsFlush = current
-		}
-		guard itimeDiff(later:current, earlier:tsFlush) < 0 else {
-			return current
-		}
-		var tmFlush:Int32 = itimeDiff(later:tsFlush, earlier:current)
-		var tmPacket:Int32 = Int32.max
-		for (_, seg) in snd_buf.makeIterator() {
-			let diff = itimeDiff(later:seg.resendts, earlier:current)
-			guard diff > 0 else {
-				return current
-			}
-			if diff < tmPacket {
-				tmPacket = diff
-			}
-		}
-		var minimal = UInt32(min(tmPacket, tmFlush))
-		if minimal >= interval {
-			minimal = interval
-		}
-		return current &+ minimal
 	}
 	
 	@available(*, noasync)

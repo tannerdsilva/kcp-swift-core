@@ -32,7 +32,7 @@ final class kcp_core_tests {
         seg.sn = sn
         kcp.snd_buf.add(seg)
     }
-    @Test func inputAckUpdatesRTTAndCwnd() throws {
+    @Test func inputAckflushsRTTAndCwnd() throws {
         kcp.snd_nxt = 2               // next SN we would use
         kcp.snd_una = 0               // earliest un‑acked
 
@@ -63,7 +63,7 @@ final class kcp_core_tests {
 
         #expect(kcp.snd_una == 2)
 
-        // The RTT estimator must have been updated – we only know that it is
+        // The RTT estimator must have been flushd – we only know that it is
         // non‑zero after the first measurement.
         #expect(kcp.rx_srtt != 0)
 
@@ -250,41 +250,6 @@ final class kcp_core_tests {
 		#expect(kcp.cwnd > 1)
 		#expect(kcp.rx_srtt != 0)
 	}
-	
-	@Test func updateTriggersFlushAtInterval() throws {
-		kcp.interval = 50
-		kcp.current  = 1_000
-		kcp.ts_flush = 0
-
-		kcp.probe = IKCP_ASK_TELL
-		kcp.ackPush(sn: 0, ts: kcp.current)
-		kcp.update(current: kcp.current) { buffer, _ in
-			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
-			self.capturedPackets.append(bytes)
-		}
-	
-		#expect(self.capturedPackets.isEmpty == false, "first update must call flush() and produce a packet")
-		let firstFlush = kcp.ts_flush
-		kcp.current &+= 20
-		kcp.update(current: kcp.current) { buffer, _ in
-			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
-			self.capturedPackets.append(bytes)
-		}
-	
-		#expect(kcp.ts_flush == firstFlush, "ts_flush must stay unchanged when the interval has not elapsed")
-		#expect(self.capturedPackets.count == 1, "still only the first packet should have been emitted")
-	
-		kcp.current &+= 40
-		kcp.probe = IKCP_ASK_TELL
-		kcp.ackPush(sn:1, ts: kcp.current)
-		kcp.update(current: kcp.current) { buffer, _ in
-			let bytes = Array(UnsafeBufferPointer(start: buffer.baseAddress, count: buffer.count))
-			self.capturedPackets.append(bytes)
-		}
-	
-		#expect(kcp.ts_flush > firstFlush, "second flush must have advanced ts_flush")
-		#expect(self.capturedPackets.count == 2, "two flushes should be recorded")
-	}
 }
 
 @Suite(.serialized)
@@ -356,7 +321,7 @@ struct kcp_send_tests {
 	
 		var received: [[UInt8]] = []
 		repeat {
-			sender.update(current:now) { buffer, _ in
+			sender.flush(current:now) { buffer, _ in
 				do {
 					if let baseAddress = buffer.baseAddress {
 						let _ = try receiver.input(baseAddress, count: buffer.count)
@@ -365,7 +330,7 @@ struct kcp_send_tests {
 					print(error)
 				}
 			}
-			receiver.update(current:now) { buffer, _  in
+			receiver.flush(current:now) { buffer, _  in
 				do {
 					if let baseAddress = buffer.baseAddress {
 						let _ = try sender.input(baseAddress, count: buffer.count)
