@@ -1,8 +1,8 @@
-import func Foundation.clock
-import var Foundation.CLOCKS_PER_SEC
+import Dispatch
 
 public func iclock() -> UInt32 {
-	return UInt32(clock() / (CLOCKS_PER_SEC / 1000))
+	let now = DispatchTime.now().uptimeNanoseconds
+	return UInt32(now / 1_000_000)  // nanoseconds → milliseconds
 }
 fileprivate func decodeUInt32(_ ptr:inout UnsafeRawPointer) -> UInt32 {
 	defer {
@@ -235,6 +235,10 @@ public struct ikcp_cb<assosiated_type> {
 	/// buffer is nil when mtu == 0. variable is safe to access any time ackcount > 0
 	internal var buffer:UnsafeMutablePointer<UInt8>! = nil
 	
+	/// is true when the control block is considered inactive with its paired control block
+	public var inactiveA:Bool
+	public var inactiveB:Bool
+	
 	public typealias OutputHandler = ((UnsafeMutableBufferPointer<UInt8>, assosiated_type?) -> Void)
 	internal var defaultOutputHandler:OutputHandler? = nil
 
@@ -285,6 +289,8 @@ public struct ikcp_cb<assosiated_type> {
 		self.fastlimit = Int64(IKCP_FASTACK_LIMIT)
 		self.nocwnd = 1
 		
+		self.inactiveA = true
+		self.inactiveB = true
 	}
 	
 	@available(*, noasync)
@@ -437,19 +443,8 @@ public struct ikcp_cb<assosiated_type> {
 			}
 			
 			seg.frg = UInt8(count - i - 1)
-			seg.conv = conv
-			seg.cmd = IKCP_CMD_PUSH
-			seg.wnd = 0
-			seg.ts = current
-			seg.sn = snd_nxt
-			snd_nxt &+= 1
-			seg.una = rcv_nxt
-			seg.resendts = current
-			seg.rto = UInt32(rx_rto)
-			seg.fastack = 0
-			seg.xmit = 0
 			
-			snd_buf.addTail(seg)
+			snd_queue.addTail(seg)
 			
 			remaining -= fragSize
 			sent += fragSize
@@ -659,6 +654,8 @@ public struct ikcp_cb<assosiated_type> {
 						#endif
 					}
 				case IKCP_CMD_PUSH:
+					inactiveA = false
+					inactiveB = false
 					if itimeDiff(later:sn, earlier:self.rcv_nxt + rcv_wnd) < 0 {
 						ackPush(sn:sn, ts:ts)
 						if itimeDiff(later:sn, earlier:self.rcv_nxt) >= 0 {
@@ -678,7 +675,13 @@ public struct ikcp_cb<assosiated_type> {
 					}
 				case IKCP_CMD_WASK:
 					probe |= IKCP_ASK_TELL
+					if(rcv_queue.count == 0) {
+						inactiveA = true
+					}
 				case IKCP_CMD_WINS:
+					if(rcv_queue.count == 0) {
+						inactiveB = true
+					}
 					// nothing to do here
 					break;
 				default:
@@ -723,7 +726,7 @@ public struct ikcp_cb<assosiated_type> {
 	}
 	
 	@available(*, noasync)
-	public mutating func flush(current:UInt32, _ output:OutputHandler) {
+	public mutating func flush(current:UInt32, _ output:OutputHandler) -> Bool {
 		self.current = current
 		
 		var buffer = UnsafeMutablePointer<UInt8>.allocate(capacity:Int(mtu))
@@ -751,7 +754,26 @@ public struct ikcp_cb<assosiated_type> {
 		}
 		ackcount = 0
 		
-		if rmt_wnd == 0 {
+		seekLoop: while itimeDiff(later:snd_nxt, earlier:snd_una &+ snd_wnd) < 0 {
+			guard let node = snd_queue.front else { break seekLoop }
+			snd_queue.remove(node)
+			snd_buf.addTail(node)
+			
+			let newSeg = node.value!
+			newSeg.conv = conv
+			newSeg.cmd = IKCP_CMD_PUSH
+			newSeg.wnd = seg.wnd
+			newSeg.ts = current
+			newSeg.sn = snd_nxt
+			snd_nxt &+= 1
+			newSeg.una = rcv_nxt
+			newSeg.resendts = current
+			newSeg.rto = UInt32(rx_rto)
+			newSeg.fastack = 0
+			newSeg.xmit = 0
+		}
+		
+		if snd_buf.count == 0 {
 			if probe_wait == 0 {
 				probe_wait = IKCP_PROBE_INIT
 			} else if itimeDiff(later:current, earlier:ts_probe) >= 0 {
@@ -770,6 +792,7 @@ public struct ikcp_cb<assosiated_type> {
 			probe_wait = 0
 		}
 		
+		// If snd_buf = 0 and probe time has passed. Send send_probe
 		if (probe & IKCP_ASK_SEND) != 0 {
 			seg.cmd = IKCP_CMD_WASK
 			if ptrOffset + Int(IKCP_OVERHEAD) > Int(mtu) {
@@ -778,6 +801,7 @@ public struct ikcp_cb<assosiated_type> {
 			}
 			ptrOffset = ikcp_segment.encode(seg, to:buffer + ptrOffset)
 		}
+		// If send_probe has been received, send tell_probe
 		if (probe & IKCP_ASK_TELL) != 0 {
 			seg.cmd = IKCP_CMD_WINS
 			if ptrOffset + Int(IKCP_OVERHEAD) > Int(mtu) {
@@ -829,6 +853,8 @@ public struct ikcp_cb<assosiated_type> {
 			}
 			
 			if needsend {
+				inactiveA = false
+				inactiveB = false
 				seg.ts = current
 				seg.una = rcv_nxt
 				let need = Int(IKCP_OVERHEAD) + Int(seg.len)
@@ -842,6 +868,7 @@ public struct ikcp_cb<assosiated_type> {
 				
 				if seg.xmit >= dead_link {
 					state = UInt32(bitPattern:Int32(-1))
+					snd_buf.clear()
 				}
 			}
 		}
@@ -867,6 +894,11 @@ public struct ikcp_cb<assosiated_type> {
 		if cwnd < 1 {
 			self.cwnd = 1
 			incr = mss
+		}
+		if(inactiveA && inactiveB) {
+			return true
+		} else {
+			return false
 		}
 	}
 	
